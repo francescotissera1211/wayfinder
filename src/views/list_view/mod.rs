@@ -1,0 +1,47 @@
+mod imp;
+
+use gtk::glib;
+use gtk::prelude::*;
+use gtk::subclass::prelude::*;
+use gtk::{ListScrollFlags, SelectionModel};
+
+glib::wrapper! {
+    pub struct WayfinderListView(ObjectSubclass<imp::ListViewInner>);
+}
+
+impl WayfinderListView {
+    pub fn new() -> Self {
+        glib::Object::builder().build()
+    }
+
+    pub fn set_model(&self, model: &impl IsA<SelectionModel>) {
+        self.imp().column_view.set_model(Some(model));
+    }
+
+    pub fn widget(&self) -> &gtk::Box {
+        &self.imp().container
+    }
+
+    pub fn column_view(&self) -> &gtk::ColumnView {
+        &self.imp().column_view
+    }
+
+    pub fn grab_focus_at_selected(&self, selected_pos: u32) {
+        self.imp().column_view.scroll_to(
+            selected_pos,
+            None::<&gtk::ColumnViewColumn>,
+            ListScrollFlags::FOCUS,
+            None,
+        );
+    }
+
+    pub fn grab_focus(&self) {
+        self.imp().column_view.grab_focus();
+    }
+}
+
+impl Default for WayfinderListView {
+    fn default() -> Self {
+        Self::new()
+    }
+}

@@ -1,0 +1,183 @@
+use std::collections::HashMap;
+use std::fs;
+use std::path::PathBuf;
+
+fn config_dir() -> PathBuf {
+    let dir = dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("wayfinder");
+    let _ = fs::create_dir_all(&dir);
+    dir
+}
+
+fn state_file() -> PathBuf {
+    config_dir().join("state")
+}
+
+fn load_state() -> HashMap<String, String> {
+    let file = state_file();
+    match fs::read_to_string(&file) {
+        Ok(contents) => {
+            let mut map = HashMap::new();
+            for line in contents.lines() {
+                if let Some((key, value)) = line.split_once('=') {
+                    map.insert(key.trim().to_string(), value.trim().to_string());
+                }
+            }
+            map
+        }
+        Err(_) => HashMap::new(),
+    }
+}
+
+fn save_state(map: &HashMap<String, String>) {
+    let file = state_file();
+    let contents: String = map
+        .iter()
+        .map(|(k, v)| format!("{}={}", k, v))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if let Err(e) = fs::write(&file, contents) {
+        log::warn!("Failed to save state: {}", e);
+    }
+}
+
+fn set_value(key: &str, value: &str) {
+    let mut map = load_state();
+    map.insert(key.to_string(), value.to_string());
+    save_state(&map);
+}
+
+fn get_value(key: &str) -> Option<String> {
+    load_state().get(key).cloned()
+}
+
+// -- Public API --
+
+pub fn save_last_directory(path: &str) {
+    set_value("directory", path);
+}
+
+pub fn load_last_directory() -> Option<PathBuf> {
+    let path_str = get_value("directory")?;
+    let mut path = PathBuf::from(path_str.trim());
+    while !path.is_dir() {
+        match path.parent() {
+            Some(parent) => path = parent.to_path_buf(),
+            None => return None,
+        }
+    }
+    Some(path)
+}
+
+pub fn save_view_mode(mode: &str) {
+    set_value("view_mode", mode);
+}
+
+pub fn load_view_mode() -> Option<String> {
+    get_value("view_mode")
+}
+
+pub fn save_show_hidden(show: bool) {
+    set_value("show_hidden", if show { "true" } else { "false" });
+}
+
+pub fn load_show_hidden() -> bool {
+    get_value("show_hidden")
+        .map(|v| v == "true")
+        .unwrap_or(false)
+}
+
+pub fn save_sidebar_visible(visible: bool) {
+    set_value("sidebar_visible", if visible { "true" } else { "false" });
+}
+
+pub fn load_sidebar_visible() -> bool {
+    get_value("sidebar_visible")
+        .map(|v| v == "true")
+        .unwrap_or(true) // default: visible
+}
+
+pub fn save_window_size(width: i32, height: i32) {
+    set_value("window_width", &width.to_string());
+    set_value("window_height", &height.to_string());
+}
+
+pub fn load_window_size() -> (i32, i32) {
+    let w = get_value("window_width")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(900);
+    let h = get_value("window_height")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(600);
+    (w, h)
+}
+
+pub fn save_sort_state(column: u32, ascending: bool) {
+    set_value("sort_column", &column.to_string());
+    set_value("sort_ascending", if ascending { "true" } else { "false" });
+}
+
+pub fn load_sort_state() -> (u32, bool) {
+    let col = get_value("sort_column")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let asc = get_value("sort_ascending")
+        .map(|v| v == "true")
+        .unwrap_or(true);
+    (col, asc)
+}
+
+// -- Per-file app associations --
+// Stored in ~/.config/wayfinder/file_apps as path=desktop_id lines
+
+fn file_apps_path() -> PathBuf {
+    config_dir().join("file_apps")
+}
+
+fn load_file_apps() -> HashMap<String, String> {
+    let file = file_apps_path();
+    match fs::read_to_string(&file) {
+        Ok(contents) => {
+            let mut map = HashMap::new();
+            for line in contents.lines() {
+                if let Some((key, value)) = line.split_once('=') {
+                    map.insert(key.trim().to_string(), value.trim().to_string());
+                }
+            }
+            map
+        }
+        Err(_) => HashMap::new(),
+    }
+}
+
+fn save_file_apps(map: &HashMap<String, String>) {
+    let file = file_apps_path();
+    let contents: String = map
+        .iter()
+        .map(|(k, v)| format!("{}={}", k, v))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if let Err(e) = fs::write(&file, contents) {
+        log::warn!("Failed to save file app associations: {}", e);
+    }
+}
+
+/// Set the preferred app for a specific file path
+pub fn save_file_app(file_path: &str, desktop_id: &str) {
+    let mut map = load_file_apps();
+    map.insert(file_path.to_string(), desktop_id.to_string());
+    save_file_apps(&map);
+}
+
+/// Get the preferred app desktop ID for a specific file path
+pub fn load_file_app(file_path: &str) -> Option<String> {
+    load_file_apps().get(file_path).cloned()
+}
+
+/// Remove a per-file app association
+pub fn remove_file_app(file_path: &str) {
+    let mut map = load_file_apps();
+    map.remove(file_path);
+    save_file_apps(&map);
+}
