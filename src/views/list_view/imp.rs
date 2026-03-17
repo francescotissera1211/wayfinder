@@ -8,8 +8,6 @@ use crate::file_object::FileObject;
 pub struct ListViewInner {
     pub column_view: ColumnView,
     pub scrolled_window: ScrolledWindow,
-    pub header_row: gtk::Box,
-    pub container: gtk::Box,
 }
 
 impl Default for ListViewInner {
@@ -241,24 +239,36 @@ impl Default for ListViewInner {
             }
         }
 
-        // Container: header + scrolled column view
+        // Down arrow from header buttons focuses the first file in the ColumnView
+        let header_key_controller = gtk::EventControllerKey::new();
+        header_key_controller.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let cv = column_view.clone();
+        header_key_controller.connect_key_pressed(move |_ctrl, key, _code, _mods| {
+            if key == gtk::gdk::Key::Down {
+                cv.grab_focus();
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        header_row.add_controller(header_key_controller);
+
+        // Put header + column view in a single box inside the scrolled window
+        let inner_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        inner_box.append(&header_row);
+        inner_box.append(&column_view);
+
         let scrolled_window = ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Automatic)
             .vscrollbar_policy(gtk::PolicyType::Automatic)
             .vexpand(true)
             .hexpand(true)
-            .child(&column_view)
+            .child(&inner_box)
             .build();
-
-        let container = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        container.append(&header_row);
-        container.append(&scrolled_window);
 
         Self {
             column_view,
             scrolled_window,
-            header_row,
-            container,
         }
     }
 }

@@ -18,8 +18,8 @@ impl WayfinderListView {
         self.imp().column_view.set_model(Some(model));
     }
 
-    pub fn widget(&self) -> &gtk::Box {
-        &self.imp().container
+    pub fn widget(&self) -> &gtk::ScrolledWindow {
+        &self.imp().scrolled_window
     }
 
     pub fn column_view(&self) -> &gtk::ColumnView {

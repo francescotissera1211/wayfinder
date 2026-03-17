@@ -597,7 +597,6 @@ impl WayfinderWindowInner {
         controller.set_propagation_phase(gtk::PropagationPhase::Capture);
         let sidebar = self.sidebar.clone();
         let sidebar_revealer = self.sidebar_revealer.clone();
-        let window = self.obj().clone();
 
         controller.connect_key_pressed(move |_controller, key, _code, mods| {
             use gtk::gdk;
@@ -607,14 +606,14 @@ impl WayfinderWindowInner {
                 || (key == gdk::Key::Tab && mods.contains(gdk::ModifierType::SHIFT_MASK));
 
             if is_tab || is_shift_tab {
-                // Both Tab and Shift+Tab from location bar go to sidebar
                 if sidebar_revealer.reveals_child() {
+                    // Sidebar visible — go there
                     sidebar.widget().child_focus(gtk::DirectionType::TabForward);
+                    glib::Propagation::Stop
                 } else {
-                    // Sidebar hidden — go to the file list
-                    window.focus_current_view();
+                    // Sidebar hidden — let Tab propagate naturally through the widget tree
+                    glib::Propagation::Proceed
                 }
-                glib::Propagation::Stop
             } else {
                 glib::Propagation::Proceed
             }
@@ -829,11 +828,46 @@ impl WayfinderWindowInner {
         });
         self.grid_view.grid_view().add_controller(click_controller2);
 
-        // Shift+F10 / Menu key — use a key controller on the window level
+        // Shift+F10 / Menu key — direct key controller on both views (capture phase)
+        // because the shortcut controller doesn't reliably catch Shift+F10
         let w = self.obj().clone();
+        let list_key = gtk::EventControllerKey::new();
+        list_key.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let w1 = w.clone();
+        list_key.connect_key_pressed(move |_ctrl, key, _code, mods| {
+            use gtk::gdk;
+            if key == gdk::Key::F10 && mods.contains(gdk::ModifierType::SHIFT_MASK)
+                || key == gdk::Key::Menu
+            {
+                crate::context_menu::show_context_menu(&w1, 100.0, 100.0);
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        self.list_view.column_view().add_controller(list_key);
+
+        let grid_key = gtk::EventControllerKey::new();
+        grid_key.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let w2 = w.clone();
+        grid_key.connect_key_pressed(move |_ctrl, key, _code, mods| {
+            use gtk::gdk;
+            if key == gdk::Key::F10 && mods.contains(gdk::ModifierType::SHIFT_MASK)
+                || key == gdk::Key::Menu
+            {
+                crate::context_menu::show_context_menu(&w2, 100.0, 100.0);
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        self.grid_view.grid_view().add_controller(grid_key);
+
+        // Also keep the action for the shortcut controller (works from other widgets)
+        let w3 = self.obj().clone();
         let action = gio::SimpleAction::new("context-menu", None);
         action.connect_activate(move |_, _| {
-            crate::context_menu::show_context_menu(&w, 100.0, 100.0);
+            crate::context_menu::show_context_menu(&w3, 100.0, 100.0);
         });
         self.obj().add_action(&action);
     }

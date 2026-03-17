@@ -177,7 +177,7 @@ pub fn show_properties_dialog(file: &FileObject, parent: &gtk::Window) {
                 let idx = dd.selected() as usize;
                 if let Some(app) = apps_for_change.get(idx) {
                     if let Some(id) = app.id() {
-                        crate::state::save_file_app(&fp, &id.to_string());
+                        crate::state::save_file_app(&fp, id.as_ref());
                         parent_for_change.announce(
                             &format!("{} will be used to open this file", app.name()),
                             AccessibleAnnouncementPriority::Medium,

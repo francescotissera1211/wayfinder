@@ -127,7 +127,64 @@ impl DirectoryModel {
         // Set up file monitor
         self.setup_monitor(&file);
 
+        // Calculate folder sizes asynchronously
+        self.calculate_folder_sizes();
+
         Ok(count)
+    }
+
+    fn calculate_folder_sizes(&self) {
+        // Collect directory paths that need size calculation
+        let mut dir_paths: Vec<String> = Vec::new();
+        for i in 0..self.store.n_items() {
+            if let Some(item) = self.store.item(i) {
+                let fo = item.downcast_ref::<FileObject>().unwrap();
+                if fo.is_directory() {
+                    dir_paths.push(fo.path());
+                }
+            }
+        }
+
+        if dir_paths.is_empty() {
+            return;
+        }
+
+        // Channel: thread sends (path, size) pairs, main thread polls and updates store
+        let (tx, rx) = std::sync::mpsc::channel::<(String, u64)>();
+        let done_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done_flag_thread = done_flag.clone();
+
+        std::thread::spawn(move || {
+            for dir_path in &dir_paths {
+                let size = walk_dir_size(std::path::Path::new(dir_path));
+                let _ = tx.send((dir_path.clone(), size));
+            }
+            done_flag_thread.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+
+        // Poll for results on the main thread
+        let store = self.store.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+            // Drain all available results
+            while let Ok((path, size)) = rx.try_recv() {
+                for i in 0..store.n_items() {
+                    if let Some(item) = store.item(i) {
+                        let fo = item.downcast_ref::<FileObject>().unwrap();
+                        if fo.path() == path {
+                            fo.set_size(size);
+                            fo.set_size_display(crate::file_object::format_size(size));
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if done_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
     }
 
     fn setup_monitor(&self, dir: &gio::File) {
@@ -234,4 +291,22 @@ impl DirectoryModel {
     pub fn set_sorter(&self, sorter: Option<&impl IsA<gtk::Sorter>>) {
         self.sort_model.set_sorter(sorter);
     }
+}
+
+fn walk_dir_size(dir: &std::path::Path) -> u64 {
+    let mut total = 0u64;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if metadata.is_file() {
+            total += metadata.len();
+        } else if metadata.is_dir() {
+            total += walk_dir_size(&entry.path());
+        }
+    }
+    total
 }

@@ -175,9 +175,3 @@ pub fn load_file_app(file_path: &str) -> Option<String> {
     load_file_apps().get(file_path).cloned()
 }
 
-/// Remove a per-file app association
-pub fn remove_file_app(file_path: &str) {
-    let mut map = load_file_apps();
-    map.remove(file_path);
-    save_file_apps(&map);
-}

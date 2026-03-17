@@ -24,9 +24,9 @@ impl FileObject {
         let is_directory = file_type == gio::FileType::Directory;
         let hidden = name.starts_with('.');
 
-        let size = info.size() as u64;
+        let size = if is_directory { 0 } else { info.size() as u64 };
         let size_display = if is_directory {
-            String::from("--")
+            String::from("Calculating...")
         } else {
             format_size(size)
         };
@@ -91,7 +91,7 @@ impl FileObject {
     }
 }
 
-fn format_size(bytes: u64) -> String {
+pub fn format_size(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * KB;
     const GB: u64 = 1024 * MB;
