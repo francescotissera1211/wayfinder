@@ -306,9 +306,27 @@ impl WayfinderWindow {
         let Some(file) = self.get_selected_file() else {
             return;
         };
+        let imp = self.imp();
+        let old_pos = imp.selection.selected();
+
         let gio_file = gio::File::for_uri(&format!("trash:///{}", file.name()));
         match wayfinder::file_ops::restore_from_trash(&gio_file) {
             Ok(dest) => {
+                // Reload the trash listing so the restored item disappears
+                if self.is_in_trash() {
+                    self.load_special_uri("trash:///");
+                    // Focus the item near where the restored one was
+                    let n_items = imp.selection.n_items();
+                    if n_items > 0 {
+                        let new_pos = if old_pos >= n_items {
+                            n_items - 1
+                        } else {
+                            old_pos
+                        };
+                        imp.selection.set_selected(new_pos);
+                        self.restore_focus_to_selected();
+                    }
+                }
                 self.announce(
                     &format!("Restored {} to {}", file.name(), dest),
                     AccessibleAnnouncementPriority::Medium,
