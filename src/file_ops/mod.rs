@@ -108,11 +108,13 @@ pub fn create_folder(parent: &gio::File, name: &str) -> Result<gio::File, glib::
     Ok(folder)
 }
 
-/// Copy or move with a progress dialog
+/// Copy or move with a progress dialog.
+/// `on_complete` is called on the main thread after a successful operation.
 pub fn copy_with_progress(
     source: &gio::File,
     dest_dir: &gio::File,
     parent_window: &gtk::Window,
+    on_complete: Option<Box<dyn FnOnce() + 'static>>,
 ) {
     let name = source.basename().unwrap();
     let dest = get_unique_dest(&dest_dir.child(&name));
@@ -126,6 +128,7 @@ pub fn copy_with_progress(
         dest_path,
         false,
         parent_window,
+        on_complete,
     );
 }
 
@@ -133,6 +136,7 @@ pub fn move_with_progress(
     source: &gio::File,
     dest_dir: &gio::File,
     parent_window: &gtk::Window,
+    on_complete: Option<Box<dyn FnOnce() + 'static>>,
 ) {
     let name = source.basename().unwrap();
     let dest = get_unique_dest(&dest_dir.child(&name));
@@ -146,7 +150,54 @@ pub fn move_with_progress(
         dest_path,
         true,
         parent_window,
+        on_complete,
     );
+}
+
+/// Recursively copy a directory and its contents.
+fn copy_directory_recursive(
+    source: &gio::File,
+    dest: &gio::File,
+    cancellable: &gio::Cancellable,
+    progress: &Arc<Mutex<(i64, i64)>>,
+) -> Result<(), glib::Error> {
+    // Create the destination directory
+    dest.make_directory_with_parents(Some(cancellable))?;
+
+    let enumerator = source.enumerate_children(
+        "standard::name,standard::type",
+        gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+        Some(cancellable),
+    )?;
+
+    while let Some(info) = enumerator.next_file(Some(cancellable))? {
+        if cancellable.is_cancelled() {
+            return Err(glib::Error::new(
+                gio::IOErrorEnum::Cancelled,
+                "Operation cancelled",
+            ));
+        }
+
+        let child_source = source.child(info.name());
+        let child_dest = dest.child(info.name());
+
+        if info.file_type() == gio::FileType::Directory {
+            copy_directory_recursive(&child_source, &child_dest, cancellable, progress)?;
+        } else {
+            let ps = progress.clone();
+            child_source.copy(
+                &child_dest,
+                gio::FileCopyFlags::NONE,
+                Some(cancellable),
+                Some(&mut |current, total| {
+                    let mut state = ps.lock().unwrap();
+                    *state = (current, total);
+                }),
+            )?;
+        }
+    }
+
+    Ok(())
 }
 
 fn run_with_progress(
@@ -156,6 +207,7 @@ fn run_with_progress(
     dest_path: String,
     is_move: bool,
     parent_window: &gtk::Window,
+    on_complete: Option<Box<dyn FnOnce() + 'static>>,
 ) {
     let op_name = if is_move { "Moving" } else { "Copying" };
 
@@ -291,15 +343,23 @@ fn run_with_progress(
                 }),
             )
         } else {
-            src.copy(
-                &dst,
-                gio::FileCopyFlags::NONE,
-                Some(&cancellable_clone),
-                Some(&mut |current, total| {
-                    let mut state = ps.lock().unwrap();
-                    *state = (current, total);
-                }),
-            )
+            let file_type = src.query_file_type(
+                gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+                gio::Cancellable::NONE,
+            );
+            if file_type == gio::FileType::Directory {
+                copy_directory_recursive(&src, &dst, &cancellable_clone, &ps)
+            } else {
+                src.copy(
+                    &dst,
+                    gio::FileCopyFlags::NONE,
+                    Some(&cancellable_clone),
+                    Some(&mut |current, total| {
+                        let mut state = ps.lock().unwrap();
+                        *state = (current, total);
+                    }),
+                )
+            }
         };
 
         let _ = tx.send(result.map_err(|e| e.to_string()));
@@ -310,6 +370,7 @@ fn run_with_progress(
     let op_name_str = if is_move { "Moved" } else { "Copied" };
     let parent_window = parent_window.clone();
     let display_name_done = display_name.clone();
+    let on_complete = std::cell::RefCell::new(on_complete);
 
     glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
         if !done_flag.load(Ordering::Relaxed) {
@@ -326,6 +387,9 @@ fn run_with_progress(
                         &format!("{} {}", op_name_str, display_name_done),
                         AccessibleAnnouncementPriority::Medium,
                     );
+                    if let Some(cb) = on_complete.borrow_mut().take() {
+                        cb();
+                    }
                 }
                 Err(e) if e.contains("cancelled") || e.contains("Cancelled") => {
                     parent_window.announce(

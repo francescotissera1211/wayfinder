@@ -1,0 +1,5 @@
+[Desktop Entry]
+Name=Extract Here
+TryExec=ark
+Exec=ark --batch --autodestination %F
+MimeType=application/zip;application/gzip;application/x-tar;application/x-compressed-tar;application/x-bzip-compressed-tar;application/x-xz-compressed-tar;application/x-zstd-compressed-tar;application/x-7z-compressed;application/x-rar;application/x-rar-compressed;application/vnd.rar;

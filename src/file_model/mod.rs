@@ -171,16 +171,33 @@ impl DirectoryModel {
         // Poll for results on the main thread
         let store = self.store.clone();
         glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+            // Build index for O(1) lookups
+            let mut path_to_index: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+            for i in 0..store.n_items() {
+                if let Some(item) = store.item(i) {
+                    let fo = item.downcast_ref::<FileObject>().unwrap();
+                    if fo.is_directory() {
+                        path_to_index.insert(fo.path(), i);
+                    }
+                }
+            }
+
             // Drain all available results
             while let Ok((path, size)) = rx.try_recv() {
-                for i in 0..store.n_items() {
+                // Try O(1) lookup first
+                let idx = path_to_index.get(&path).copied().or_else(|| {
+                    // Fallback: linear scan if indices shifted
+                    (0..store.n_items()).find(|&i| {
+                        store.item(i)
+                            .and_then(|item| item.downcast_ref::<FileObject>().map(|fo| fo.path() == path))
+                            .unwrap_or(false)
+                    })
+                });
+                if let Some(i) = idx {
                     if let Some(item) = store.item(i) {
                         let fo = item.downcast_ref::<FileObject>().unwrap();
-                        if fo.path() == path {
-                            fo.set_size(size);
-                            fo.set_size_display(crate::file_object::format_size(size));
-                            break;
-                        }
+                        fo.set_size(size);
+                        fo.set_size_display(crate::file_object::format_size(size));
                     }
                 }
             }
@@ -300,18 +317,27 @@ impl DirectoryModel {
 }
 
 fn walk_dir_size(dir: &std::path::Path) -> u64 {
+    walk_dir_size_impl(dir, 0)
+}
+
+fn walk_dir_size_impl(dir: &std::path::Path, depth: u32) -> u64 {
+    if depth > 100 {
+        return 0;
+    }
     let mut total = 0u64;
     let Ok(entries) = std::fs::read_dir(dir) else {
         return 0;
     };
     for entry in entries.flatten() {
-        let Ok(metadata) = entry.metadata() else {
+        let Ok(meta) = entry.path().symlink_metadata() else {
             continue;
         };
-        if metadata.is_file() {
-            total += metadata.len();
-        } else if metadata.is_dir() {
-            total += walk_dir_size(&entry.path());
+        if meta.file_type().is_symlink() {
+            total += meta.len();
+        } else if meta.is_file() {
+            total += meta.len();
+        } else if meta.is_dir() {
+            total += walk_dir_size_impl(&entry.path(), depth + 1);
         }
     }
     total

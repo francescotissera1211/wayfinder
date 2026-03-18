@@ -82,9 +82,10 @@ impl WayfinderWindow {
                 let announcement = format!("Opened {}, {} items", dir_name, count);
                 self.announce(&announcement, AccessibleAnnouncementPriority::Medium);
 
-                // Reset column, selection state, and focus the first item
+                // Reset column, selection state, type-ahead, and focus the first item
                 imp.current_column.set(0);
                 imp.file_selection.borrow_mut().clear();
+                imp.type_ahead_buffer.borrow_mut().clear();
                 imp.selection.set_selected(0);
 
                 self.focus_current_view();
@@ -421,12 +422,18 @@ impl WayfinderWindow {
             let parent_window: gtk::Window = self.clone().upcast();
 
             for source in &state.files {
+                let w = self.clone();
+                let reload: Option<Box<dyn FnOnce() + 'static>> = Some(Box::new(move || {
+                    let path = w.imp().model.current_path();
+                    let _ = w.imp().model.load_directory(&path);
+                    w.update_status();
+                }));
                 match state.operation {
                     ClipboardOperation::Copy => {
-                        wayfinder::file_ops::copy_with_progress(source, &dest_dir, &parent_window);
+                        wayfinder::file_ops::copy_with_progress(source, &dest_dir, &parent_window, reload);
                     }
                     ClipboardOperation::Cut => {
-                        wayfinder::file_ops::move_with_progress(source, &dest_dir, &parent_window);
+                        wayfinder::file_ops::move_with_progress(source, &dest_dir, &parent_window, reload);
                     }
                 }
             }
@@ -445,6 +452,10 @@ impl WayfinderWindow {
         if files.is_empty() {
             return;
         }
+        // Remember position before deletion
+        let imp = self.imp();
+        let old_pos = imp.selection.selected();
+
         let mut success = 0;
         for file in &files {
             let gio_file = gio::File::for_path(file.path());
@@ -452,8 +463,23 @@ impl WayfinderWindow {
                 success += 1;
             }
         }
-        self.imp().file_selection.borrow_mut().clear();
+        imp.file_selection.borrow_mut().clear();
         self.update_status();
+
+        // Focus the item above the deleted one (or the new last item)
+        let n_items = imp.selection.n_items();
+        if n_items > 0 {
+            let new_pos = if old_pos > 0 && old_pos >= n_items {
+                n_items - 1
+            } else if old_pos > 0 {
+                old_pos - 1
+            } else {
+                0
+            };
+            imp.selection.set_selected(new_pos);
+            self.restore_focus_to_selected();
+        }
+
         if success == 1 {
             self.announce(
                 &format!("Moved {} to Bin", files[0].name()),
@@ -473,6 +499,7 @@ impl WayfinderWindow {
         };
 
         let window = self.clone();
+        let old_pos = self.imp().selection.selected();
         let dialog = gtk::AlertDialog::builder()
             .message(format!("Permanently delete {}?", file.name()))
             .detail("This cannot be undone.")
@@ -494,6 +521,19 @@ impl WayfinderWindow {
                                     &format!("Deleted {}", file.name()),
                                     AccessibleAnnouncementPriority::Medium,
                                 );
+                                // Focus the item above the deleted one
+                                let n_items = window.imp().selection.n_items();
+                                if n_items > 0 {
+                                    let new_pos = if old_pos > 0 && old_pos >= n_items {
+                                        n_items - 1
+                                    } else if old_pos > 0 {
+                                        old_pos - 1
+                                    } else {
+                                        0
+                                    };
+                                    window.imp().selection.set_selected(new_pos);
+                                    window.restore_focus_to_selected();
+                                }
                             }
                             Err(e) => {
                                 window.announce(
@@ -603,6 +643,25 @@ impl WayfinderWindow {
 
         dlg.present();
         entry.grab_focus();
+    }
+
+    pub fn handle_drop(&self, uri_str: &str) {
+        let path = if let Some(p) = uri_str.strip_prefix("file://") {
+            p.to_string()
+        } else {
+            uri_str.to_string()
+        };
+
+        let source = gio::File::for_path(&path);
+        let dest_dir = gio::File::for_path(self.imp().model.current_path());
+        let parent_window: gtk::Window = self.clone().upcast();
+        let w = self.clone();
+        let reload: Option<Box<dyn FnOnce() + 'static>> = Some(Box::new(move || {
+            let current = w.imp().model.current_path();
+            let _ = w.imp().model.load_directory(&current);
+            w.update_status();
+        }));
+        wayfinder::file_ops::copy_with_progress(&source, &dest_dir, &parent_window, reload);
     }
 
     pub fn create_new_folder(&self) {

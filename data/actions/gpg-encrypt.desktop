@@ -1,0 +1,4 @@
+[Desktop Entry]
+Name=Encrypt (GPG)...
+TryExec=gpg
+Exec=sh -c 'recipient=$(zenity --entry --title="GPG Encrypt" --text="Recipient email or key ID (leave blank for symmetric):" --width=400 2>/dev/null); if [ -z "$recipient" ]; then gpg --symmetric "$1"; else gpg --encrypt --recipient "$recipient" "$1"; fi' _ %f

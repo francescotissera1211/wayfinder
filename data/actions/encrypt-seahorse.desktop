@@ -1,0 +1,4 @@
+[Desktop Entry]
+Name=Encrypt...
+TryExec=seahorse-tool
+Exec=seahorse-tool --encrypt %F

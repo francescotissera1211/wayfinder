@@ -1,3 +1,4 @@
+use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
@@ -5,6 +6,8 @@ use gtk::subclass::prelude::*;
 pub struct SidebarInner {
     pub places_list: gtk::ListBox,
     pub container: gtk::Box,
+    /// Keep VolumeMonitor alive so its signals continue to fire.
+    pub volume_monitor: gio::VolumeMonitor,
 }
 
 impl Default for SidebarInner {
@@ -29,6 +32,7 @@ impl Default for SidebarInner {
         Self {
             places_list,
             container,
+            volume_monitor: gio::VolumeMonitor::get(),
         }
     }
 }

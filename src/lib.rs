@@ -1,3 +1,4 @@
+pub mod actions;
 pub mod clipboard;
 pub mod file_model;
 pub mod file_object;

@@ -18,6 +18,13 @@ impl ObjectSubclass for WayfinderApplicationInner {
 impl ObjectImpl for WayfinderApplicationInner {}
 
 impl ApplicationImpl for WayfinderApplicationInner {
+    fn startup(&self) {
+        self.parent_startup();
+        let app = self.obj().clone();
+        let rx = crate::dbus::start_service();
+        crate::dbus::connect_to_app(app.upcast_ref(), rx);
+    }
+
     fn activate(&self) {
         let app = self.obj();
         let window = WayfinderWindow::new(app.upcast_ref());

@@ -1,3 +1,4 @@
+use gtk::gdk;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
@@ -350,6 +351,33 @@ fn setup_name_factory(factory: &SignalListItemFactory) {
                     )
                 };
                 child.update_property(&[gtk::accessible::Property::Label(&label)]);
+
+                // Add DragSource for drag & drop
+                let drag_source = gtk::DragSource::new();
+                drag_source.set_actions(gdk::DragAction::COPY | gdk::DragAction::MOVE);
+                let uri = format!("file://{}", file.path());
+                let content = gdk::ContentProvider::for_value(&uri.to_value());
+                drag_source.set_content(Some(&content));
+                child.add_controller(drag_source);
+            }
+        }
+    });
+
+    // Remove drag controllers on unbind to prevent stacking on reuse
+    factory.connect_unbind(|_factory, item| {
+        let item = item.downcast_ref::<gtk::ListItem>().unwrap();
+        if let Some(child) = item.child() {
+            let mut controllers_to_remove = Vec::new();
+            let ctrl = child.observe_controllers();
+            for i in 0..ctrl.n_items() {
+                if let Some(c) = ctrl.item(i) {
+                    if c.downcast_ref::<gtk::DragSource>().is_some() {
+                        controllers_to_remove.push(c.downcast::<gtk::EventController>().unwrap());
+                    }
+                }
+            }
+            for ctrl in controllers_to_remove {
+                child.remove_controller(&ctrl);
             }
         }
     });

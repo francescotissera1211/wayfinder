@@ -1,0 +1,4 @@
+[Desktop Entry]
+Name=Compress...
+TryExec=file-roller
+Exec=file-roller --add %F

@@ -1,7 +1,10 @@
+use std::rc::Rc;
+
 use gtk::gio;
 use gtk::gdk;
 use gtk::glib;
 use gtk::prelude::*;
+use gtk::subclass::prelude::*;
 use gtk::{AccessibleAnnouncementPriority, AccessibleRole};
 
 use crate::window::WayfinderWindow;
@@ -222,6 +225,43 @@ pub fn show_context_menu(window: &WayfinderWindow, x: f64, y: f64) {
                 });
             }
         });
+
+        // Custom actions from .desktop files and Nautilus scripts
+        let custom_actions = wayfinder::actions::load_actions();
+        let matching_actions: Vec<_> = custom_actions
+            .into_iter()
+            .filter(|a| wayfinder::actions::matches_mime(a, &content_type))
+            .collect();
+
+        if !matching_actions.is_empty() {
+            add_separator(&main_box);
+
+            for action in matching_actions {
+                let action = Rc::new(action);
+                let action_name = action.name.clone();
+                if wayfinder::actions::is_compress_dialog(&action) {
+                    add_menu_item(&main_box, &action_name, &popover, {
+                        let w = window.clone();
+                        let f = file.clone();
+                        move || {
+                            let parent: gtk::Window = w.clone().upcast();
+                            wayfinder::actions::show_compress_dialog(&[f.path()], &parent);
+                        }
+                    });
+                } else {
+                    add_menu_item(&main_box, &action_name, &popover, {
+                        let w = window.clone();
+                        let f = file.clone();
+                        let a = action.clone();
+                        move || {
+                            let file_path = f.path();
+                            let current_dir = w.imp().model.current_path();
+                            wayfinder::actions::execute_action(&a, &[file_path], &current_dir);
+                        }
+                    });
+                }
+            }
+        }
 
         // === Open With submenu page ===
         if has_submenu {

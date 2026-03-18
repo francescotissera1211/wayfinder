@@ -99,8 +99,10 @@ pub fn load_sidebar_visible() -> bool {
 }
 
 pub fn save_window_size(width: i32, height: i32) {
-    set_value("window_width", &width.to_string());
-    set_value("window_height", &height.to_string());
+    let mut map = load_state();
+    map.insert("window_width".to_string(), width.to_string());
+    map.insert("window_height".to_string(), height.to_string());
+    save_state(&map);
 }
 
 pub fn load_window_size() -> (i32, i32) {
@@ -114,8 +116,10 @@ pub fn load_window_size() -> (i32, i32) {
 }
 
 pub fn save_sort_state(column: u32, ascending: bool) {
-    set_value("sort_column", &column.to_string());
-    set_value("sort_ascending", if ascending { "true" } else { "false" });
+    let mut map = load_state();
+    map.insert("sort_column".to_string(), column.to_string());
+    map.insert("sort_ascending".to_string(), if ascending { "true" } else { "false" }.to_string());
+    save_state(&map);
 }
 
 pub fn load_sort_state() -> (u32, bool) {
@@ -173,5 +177,49 @@ pub fn save_file_app(file_path: &str, desktop_id: &str) {
 /// Get the preferred app desktop ID for a specific file path
 pub fn load_file_app(file_path: &str) -> Option<String> {
     load_file_apps().get(file_path).cloned()
+}
+
+// -- Sidebar configuration --
+// Stored in ~/.config/wayfinder/sidebar as lines of "id:visible"
+// where id is the place name and visible is "true" or "false".
+// Order of lines determines display order.
+
+fn sidebar_config_path() -> PathBuf {
+    config_dir().join("sidebar")
+}
+
+/// A single sidebar entry's config: id, visible flag.
+#[derive(Clone, Debug)]
+pub struct SidebarEntry {
+    pub id: String,
+    pub visible: bool,
+}
+
+pub fn load_sidebar_config() -> Option<Vec<SidebarEntry>> {
+    let file = sidebar_config_path();
+    let contents = fs::read_to_string(&file).ok()?;
+    let entries: Vec<SidebarEntry> = contents
+        .lines()
+        .filter_map(|line| {
+            let (id, vis) = line.split_once(':')?;
+            Some(SidebarEntry {
+                id: id.trim().to_string(),
+                visible: vis.trim() == "true",
+            })
+        })
+        .collect();
+    if entries.is_empty() { None } else { Some(entries) }
+}
+
+pub fn save_sidebar_config(entries: &[SidebarEntry]) {
+    let file = sidebar_config_path();
+    let contents: String = entries
+        .iter()
+        .map(|e| format!("{}:{}", e.id, if e.visible { "true" } else { "false" }))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if let Err(e) = fs::write(&file, contents) {
+        log::warn!("Failed to save sidebar config: {}", e);
+    }
 }
 

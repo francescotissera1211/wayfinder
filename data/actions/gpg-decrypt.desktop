@@ -1,0 +1,5 @@
+[Desktop Entry]
+Name=Decrypt
+TryExec=gpg
+Exec=sh -c 'out="$1"; for ext in .gpg .pgp .asc .enc; do out="${out%%$ext}"; done; if [ "$out" = "$1" ]; then out="$1.decrypted"; fi; if gpg --decrypt --output "$out" "$1" 2>/tmp/gpg-err.$$; then zenity --info --title="Decrypted" --text="Saved to: $(basename "$out")" --width=400 2>/dev/null; else zenity --error --title="Decrypt Failed" --text="$(cat /tmp/gpg-err.$$)" --width=400 2>/dev/null; fi; rm -f /tmp/gpg-err.$$' _ %f
+MimeType=application/pgp-encrypted;application/x-pgp-encrypted;application/gpg-encrypted;application/pgp-keys;

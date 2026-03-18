@@ -1,0 +1,5 @@
+[Desktop Entry]
+Name=Verify Signature
+TryExec=gpg
+Exec=sh -c 'result=$(gpg --verify "$1" 2>&1); zenity --info --title="GPG Verify" --text="$result" --width=500 2>/dev/null || echo "$result"' _ %f
+MimeType=application/pgp-signature;application/x-pgp-signature;

@@ -33,6 +33,11 @@ pub fn show_properties_dialog(file: &FileObject, parent: &gtk::Window) {
         .default_height(500)
         .build();
 
+    dlg.update_property(&[gtk::accessible::Property::Label(&format!(
+        "Properties for {}",
+        file.name()
+    ))]);
+
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
     vbox.set_margin_top(12);
     vbox.set_margin_bottom(12);

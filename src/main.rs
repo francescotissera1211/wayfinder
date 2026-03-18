@@ -1,5 +1,6 @@
 mod app;
 mod context_menu;
+mod dbus;
 mod properties;
 mod shortcuts;
 mod window;

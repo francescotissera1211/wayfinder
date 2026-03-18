@@ -1,0 +1,4 @@
+[Desktop Entry]
+Name=Calculate Checksum
+TryExec=sha256sum
+Exec=sh -c 'result=$(sha256sum "$1"); zenity --info --title="SHA-256 Checksum" --text="$result" --width=600 2>/dev/null || echo "$result"' _ %f

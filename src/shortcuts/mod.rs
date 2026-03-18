@@ -34,6 +34,9 @@ pub fn register_shortcuts(window: &super::window::WayfinderWindow) {
     add_shortcut(&controller, "<Ctrl><Shift>n", "win.new-folder");
     add_shortcut(&controller, "<Ctrl>a", "win.select-all");
 
+    // Bookmarks
+    add_shortcut(&controller, "<Ctrl>d", "win.bookmark");
+
     // Properties and context menu
     add_shortcut(&controller, "<Ctrl>i", "win.properties");
     add_shortcut(&controller, "<Shift>F10", "win.context-menu");

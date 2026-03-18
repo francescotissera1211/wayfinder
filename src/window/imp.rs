@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use gtk::gio;
 use gtk::glib;
@@ -72,6 +73,8 @@ pub struct WayfinderWindowInner {
     pub clipboard: RefCell<Option<ClipboardState>>,
     pub current_view: Cell<ViewMode>,
     pub file_selection: RefCell<SelectionState>,
+    pub type_ahead_buffer: Rc<RefCell<String>>,
+    pub type_ahead_generation: Rc<Cell<u32>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -194,6 +197,8 @@ impl Default for WayfinderWindowInner {
             clipboard: RefCell::new(None),
             current_view: Cell::new(ViewMode::List),
             file_selection: RefCell::new(SelectionState::new()),
+            type_ahead_buffer: Rc::new(RefCell::new(String::new())),
+            type_ahead_generation: Rc::new(Cell::new(0)),
         }
     }
 }
@@ -318,6 +323,9 @@ impl ObjectImpl for WayfinderWindowInner {
 
         // Connect right-click and Shift+F10 for context menu
         self.connect_context_menu();
+
+        // Connect drop targets for drag & drop
+        self.connect_drop_targets();
 
         // When the window regains focus (e.g. returning from an external app),
         // restore focus to the selected file item
@@ -575,6 +583,26 @@ impl WayfinderWindowInner {
         });
         window.add_action(&action);
 
+        // Bookmark current directory
+        let w = window.clone();
+        let action = gio::SimpleAction::new("bookmark", None);
+        action.connect_activate(move |_, _| {
+            let path = w.imp().model.current_path();
+            if wayfinder::sidebar::add_bookmark(&path) {
+                w.imp().sidebar.refresh_bookmarks();
+                w.announce(
+                    &format!("Bookmarked {}", path),
+                    AccessibleAnnouncementPriority::Medium,
+                );
+            } else {
+                w.announce(
+                    "Already bookmarked",
+                    AccessibleAnnouncementPriority::Medium,
+                );
+            }
+        });
+        window.add_action(&action);
+
         // Go to folder — same as Ctrl+L location dialog
         // (the "location-bar" action is registered in setup_location_dialog)
     }
@@ -675,23 +703,19 @@ impl WayfinderWindowInner {
                         return glib::Propagation::Proceed;
                     }
 
-                    let expanded = if text.starts_with('~') {
-                        dirs::home_dir()
-                            .map(|h| text.replacen('~', &h.to_string_lossy(), 1))
-                            .unwrap_or(text)
-                    } else {
-                        text
-                    };
-
-                    if let Some(completed) = complete_path(&expanded) {
+                    if let Some(completed) = complete_path(&text) {
+                        let added = &completed[text.len()..];
                         entry_for_tab.set_text(&completed);
                         entry_for_tab.set_position(-1);
-                        let name = std::path::Path::new(&completed)
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or(completed);
+                        if !added.is_empty() {
+                            dlg_for_tab.announce(
+                                added,
+                                AccessibleAnnouncementPriority::Medium,
+                            );
+                        }
+                    } else if text.contains('/') {
                         dlg_for_tab.announce(
-                            &name,
+                            "No completions",
                             AccessibleAnnouncementPriority::Medium,
                         );
                     }
@@ -861,6 +885,59 @@ impl WayfinderWindowInner {
                     return glib::Propagation::Proceed;
                 }
                 glib::Propagation::Stop
+            } else if !mods.contains(gdk::ModifierType::CONTROL_MASK)
+                && !mods.contains(gdk::ModifierType::ALT_MASK)
+                && key != gdk::Key::Return
+                && key != gdk::Key::KP_Enter
+                && key != gdk::Key::Delete
+                && key != gdk::Key::BackSpace
+            {
+                // Type-ahead: navigate to file starting with typed characters
+                if let Some(ch) = key.to_unicode() {
+                    if ch.is_alphanumeric() || ch == '.' || ch == '-' || ch == '_' {
+                        // Bump generation to invalidate any pending timer
+                        let gen = imp.type_ahead_generation.get().wrapping_add(1);
+                        imp.type_ahead_generation.set(gen);
+
+                        // Append character to buffer
+                        imp.type_ahead_buffer.borrow_mut().push(ch);
+                        let query = imp.type_ahead_buffer.borrow().to_lowercase();
+
+                        // Find first matching item
+                        if let Some(model) = imp.selection.model() {
+                            for i in 0..model.n_items() {
+                                if let Some(item) = model.item(i) {
+                                    if let Some(file) = item.downcast_ref::<FileObject>() {
+                                        if file.name().to_lowercase().starts_with(&query) {
+                                            imp.selection.set_selected(i);
+                                            window.restore_focus_to_selected();
+                                            window.announce(
+                                                &file.a11y_name(),
+                                                AccessibleAnnouncementPriority::Medium,
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Reset buffer after 800ms of no typing
+                        let buffer = imp.type_ahead_buffer.clone();
+                        let gen_cell = imp.type_ahead_generation.clone();
+                        glib::timeout_add_local_once(
+                            std::time::Duration::from_millis(800),
+                            move || {
+                                if gen_cell.get() == gen {
+                                    buffer.borrow_mut().clear();
+                                }
+                            },
+                        );
+
+                        return glib::Propagation::Stop;
+                    }
+                }
+                glib::Propagation::Proceed
             } else {
                 glib::Propagation::Proceed
             }
@@ -994,6 +1071,59 @@ impl WayfinderWindowInner {
                     return glib::Propagation::Proceed;
                 }
                 glib::Propagation::Stop
+            } else if !mods.contains(gdk::ModifierType::CONTROL_MASK)
+                && !mods.contains(gdk::ModifierType::ALT_MASK)
+                && key != gdk::Key::Return
+                && key != gdk::Key::KP_Enter
+                && key != gdk::Key::Delete
+                && key != gdk::Key::BackSpace
+            {
+                // Type-ahead: navigate to file starting with typed characters
+                if let Some(ch) = key.to_unicode() {
+                    if ch.is_alphanumeric() || ch == '.' || ch == '-' || ch == '_' {
+                        // Bump generation to invalidate any pending timer
+                        let gen = imp.type_ahead_generation.get().wrapping_add(1);
+                        imp.type_ahead_generation.set(gen);
+
+                        // Append character to buffer
+                        imp.type_ahead_buffer.borrow_mut().push(ch);
+                        let query = imp.type_ahead_buffer.borrow().to_lowercase();
+
+                        // Find first matching item
+                        if let Some(model) = imp.selection.model() {
+                            for i in 0..model.n_items() {
+                                if let Some(item) = model.item(i) {
+                                    if let Some(file) = item.downcast_ref::<FileObject>() {
+                                        if file.name().to_lowercase().starts_with(&query) {
+                                            imp.selection.set_selected(i);
+                                            window.restore_focus_to_selected();
+                                            window.announce(
+                                                &file.a11y_name(),
+                                                AccessibleAnnouncementPriority::Medium,
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Reset buffer after 800ms of no typing
+                        let buffer = imp.type_ahead_buffer.clone();
+                        let gen_cell = imp.type_ahead_generation.clone();
+                        glib::timeout_add_local_once(
+                            std::time::Duration::from_millis(800),
+                            move || {
+                                if gen_cell.get() == gen {
+                                    buffer.borrow_mut().clear();
+                                }
+                            },
+                        );
+
+                        return glib::Propagation::Stop;
+                    }
+                }
+                glib::Propagation::Proceed
             } else {
                 glib::Propagation::Proceed
             }
@@ -1073,6 +1203,10 @@ impl WayfinderWindowInner {
             popover.popup();
         });
 
+        // Right-click on sidebar (non-bookmark, non-trash) shows "Edit Sidebar" menu
+        self.sidebar
+            .connect_sidebar_edit_menu(&self.obj().clone().upcast());
+
         // Register open-trash action
         let w = self.obj().clone();
         let action = gio::SimpleAction::new("open-trash", None);
@@ -1147,6 +1281,40 @@ impl WayfinderWindowInner {
         self.obj().add_action(&action);
     }
 
+    fn connect_drop_targets(&self) {
+        let window = self.obj().clone();
+
+        // Drop target for list view
+        let drop_target = gtk::DropTarget::new(
+            glib::Type::STRING,
+            gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE,
+        );
+        let w = window.clone();
+        drop_target.connect_drop(move |_target, value, _x, _y| {
+            if let Ok(uri_str) = value.get::<String>() {
+                w.handle_drop(&uri_str);
+                return true;
+            }
+            false
+        });
+        self.list_view.column_view().add_controller(drop_target);
+
+        // Drop target for grid view
+        let drop_target = gtk::DropTarget::new(
+            glib::Type::STRING,
+            gtk::gdk::DragAction::COPY | gtk::gdk::DragAction::MOVE,
+        );
+        let w = window.clone();
+        drop_target.connect_drop(move |_target, value, _x, _y| {
+            if let Ok(uri_str) = value.get::<String>() {
+                w.handle_drop(&uri_str);
+                return true;
+            }
+            false
+        });
+        self.grid_view.grid_view().add_controller(drop_target);
+    }
+
     fn announce_current_cell(&self, window: &super::WayfinderWindow) {
         let col = self.current_column.get();
         let col_name = COLUMN_NAMES[col];
@@ -1192,85 +1360,97 @@ impl WayfinderWindowInner {
     }
 }
 
-/// Complete a partial path to the first matching entry.
-/// If the path ends with a partial name, find the first match in the parent directory.
-/// If the path is a complete directory, append a / to signal entering it.
 fn complete_path(partial: &str) -> Option<String> {
-    let path = std::path::Path::new(partial);
-
-    // If it's an existing directory without trailing /, add the /
-    if path.is_dir() && !partial.ends_with('/') {
-        return Some(format!("{}/", partial));
-    }
-
-    // If it ends with /, list the first child
-    if partial.ends_with('/') && path.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(path) {
-            let mut names: Vec<String> = entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.file_name().to_string_lossy().to_string())
-                .collect();
-            names.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
-            if let Some(first) = names.first() {
-                return Some(format!("{}{}", partial, first));
-            }
+    let expanded = if partial.starts_with('~') {
+        if let Some(home) = dirs::home_dir() {
+            partial.replacen('~', &home.to_string_lossy(), 1)
+        } else {
+            return None;
         }
+    } else {
+        partial.to_string()
+    };
+
+    let (dir_str, prefix) = if expanded.ends_with('/') {
+        (expanded.as_str(), "")
+    } else {
+        let p = std::path::Path::new(&expanded);
+        let dir = p.parent()?.to_str()?;
+        let prefix = p.file_name()?.to_str()?;
+        (dir, prefix)
+    };
+
+    let dir = if dir_str.is_empty() { "." } else { dir_str };
+    let entries = std::fs::read_dir(dir).ok()?;
+
+    let prefix_lower = prefix.to_lowercase();
+    let mut matches: Vec<String> = entries
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            // Skip hidden unless prefix starts with .
+            if name.starts_with('.') && !prefix.starts_with('.') {
+                return None;
+            }
+            if name.to_lowercase().starts_with(&prefix_lower) {
+                let full = if dir_str.ends_with('/') || dir_str.is_empty() {
+                    format!("{}{}", dir_str, name)
+                } else {
+                    format!("{}/{}", dir_str, name)
+                };
+                // Add trailing / for directories
+                let full = if e.file_type().ok()?.is_dir() {
+                    format!("{}/", full)
+                } else {
+                    full
+                };
+                Some(full)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    matches.sort();
+
+    if matches.is_empty() {
         return None;
     }
-
-    // Split into parent directory and partial filename
-    let parent = path.parent()?;
-    let prefix = path.file_name()?.to_string_lossy().to_lowercase();
-
-    if !parent.is_dir() {
-        return None;
-    }
-
-    let mut matches: Vec<String> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(parent) {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.to_lowercase().starts_with(&prefix) {
-                matches.push(name);
-            }
-        }
-    }
-
-    matches.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
 
     if matches.len() == 1 {
-        // Single match — complete it fully
-        let completed = parent.join(&matches[0]);
-        let result = completed.to_string_lossy().to_string();
-        if completed.is_dir() {
-            Some(format!("{}/", result))
-        } else {
-            Some(result)
-        }
-    } else if matches.len() > 1 {
-        // Multiple matches — complete to the longest common prefix
-        let common = longest_common_prefix(&matches);
-        let completed = parent.join(&common);
-        Some(completed.to_string_lossy().to_string())
-    } else {
-        None
-    }
-}
-
-fn longest_common_prefix(strings: &[String]) -> String {
-    if strings.is_empty() {
-        return String::new();
-    }
-    let first = &strings[0];
-    let mut len = first.len();
-    for s in &strings[1..] {
-        len = len.min(s.len());
-        for (i, (a, b)) in first.chars().zip(s.chars()).enumerate() {
-            if a.to_lowercase().ne(b.to_lowercase()) {
-                len = len.min(i);
-                break;
+        let result = &matches[0];
+        // Convert back to ~ if applicable
+        if let Some(home) = dirs::home_dir() {
+            let home_str = home.to_string_lossy();
+            if result.starts_with(home_str.as_ref()) {
+                return Some(result.replacen(home_str.as_ref(), "~", 1));
             }
         }
+        return Some(result.clone());
     }
-    first[..len].to_string()
+
+    // Multiple matches — find longest common prefix
+    let first = &matches[0];
+    let mut common_len = first.len();
+    for m in &matches[1..] {
+        common_len = first
+            .chars()
+            .zip(m.chars())
+            .take(common_len)
+            .take_while(|(a, b)| a == b)
+            .count();
+    }
+
+    let common = &first[..common_len];
+    if common.len() > expanded.len() {
+        if let Some(home) = dirs::home_dir() {
+            let home_str = home.to_string_lossy();
+            if common.starts_with(home_str.as_ref()) {
+                return Some(common.replacen(home_str.as_ref(), "~", 1));
+            }
+        }
+        return Some(common.to_string());
+    }
+
+    None
 }
