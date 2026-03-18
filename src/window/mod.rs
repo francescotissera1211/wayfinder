@@ -262,7 +262,8 @@ impl WayfinderWindow {
                 a.id().map(|id| id.to_string()) == Some(desktop_id.clone())
             }) {
                 let gio_file = gio::File::for_path(&path);
-                if let Err(e) = app.launch(&[gio_file], gio::AppLaunchContext::NONE) {
+                let ctx = WidgetExt::display(self).app_launch_context();
+                if let Err(e) = app.launch(&[gio_file], Some(&ctx)) {
                     log::error!("Failed to open with preferred app: {}", e);
                     // Fall through to default
                 } else {
@@ -274,7 +275,8 @@ impl WayfinderWindow {
         // Fall back to MIME type default
         let gio_file = gio::File::for_path(&path);
         let uri = gio_file.uri();
-        if let Err(e) = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE) {
+        let ctx = WidgetExt::display(self).app_launch_context();
+        if let Err(e) = gio::AppInfo::launch_default_for_uri(&uri, Some(&ctx)) {
             log::error!("Failed to open {}: {}", path, e);
             self.announce(
                 &format!("Failed to open {}", file.name()),
