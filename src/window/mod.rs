@@ -781,6 +781,10 @@ impl WayfinderWindow {
                         &format!("Renamed to {}", new_name),
                         AccessibleAnnouncementPriority::Medium,
                     );
+                    // Reload directory as fallback in case file monitor doesn't catch the rename
+                    let path = w.imp().model.current_path();
+                    let _ = w.imp().model.load_directory(&path);
+                    w.update_status();
                 }
                 Err(e) => {
                     w.announce(
@@ -799,6 +803,24 @@ impl WayfinderWindow {
 
         entry.connect_activate(move |_| {
             do_rename();
+        });
+
+        let key_ctrl = gtk::EventControllerKey::new();
+        let d = dlg.clone();
+        key_ctrl.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape {
+                d.close();
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        dlg.add_controller(key_ctrl);
+
+        let w = window.clone();
+        dlg.connect_close_request(move |_| {
+            w.restore_focus_to_selected();
+            glib::Propagation::Proceed
         });
 
         dlg.present();
@@ -884,6 +906,10 @@ impl WayfinderWindow {
                         &format!("Created folder {}", name),
                         AccessibleAnnouncementPriority::Medium,
                     );
+                    // Reload directory as fallback in case file monitor doesn't catch the new folder
+                    let path = w.imp().model.current_path();
+                    let _ = w.imp().model.load_directory(&path);
+                    w.update_status();
                 }
                 Err(e) => {
                     w.announce(
@@ -902,6 +928,24 @@ impl WayfinderWindow {
 
         entry.connect_activate(move |_| {
             do_create();
+        });
+
+        let key_ctrl = gtk::EventControllerKey::new();
+        let d = dlg.clone();
+        key_ctrl.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape {
+                d.close();
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        dlg.add_controller(key_ctrl);
+
+        let w = window.clone();
+        dlg.connect_close_request(move |_| {
+            w.restore_focus_to_selected();
+            glib::Propagation::Proceed
         });
 
         dlg.present();
@@ -1153,6 +1197,25 @@ impl WayfinderWindow {
         vbox.append(&close_btn);
 
         dlg.set_child(Some(&vbox));
+
+        let key_ctrl = gtk::EventControllerKey::new();
+        let d = dlg.clone();
+        key_ctrl.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape {
+                d.close();
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        dlg.add_controller(key_ctrl);
+
+        let w = self.clone();
+        dlg.connect_close_request(move |_| {
+            w.restore_focus_to_selected();
+            glib::Propagation::Proceed
+        });
+
         dlg.present();
     }
 }

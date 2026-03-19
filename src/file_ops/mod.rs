@@ -116,9 +116,10 @@ pub fn copy_with_progress(
     parent_window: &gtk::Window,
     on_complete: Option<Box<dyn FnOnce() + 'static>>,
 ) {
-    let name = source.basename().unwrap();
+    let Some(name) = source.basename() else { return; };
     let dest = get_unique_dest(&dest_dir.child(&name));
-    let dest_path = dest_dir.path().unwrap().to_string_lossy().to_string();
+    let Some(dest_path_buf) = dest_dir.path() else { return; };
+    let dest_path = dest_path_buf.to_string_lossy().to_string();
     let display_name = name.to_string_lossy().to_string();
 
     run_with_progress(
@@ -138,9 +139,10 @@ pub fn move_with_progress(
     parent_window: &gtk::Window,
     on_complete: Option<Box<dyn FnOnce() + 'static>>,
 ) {
-    let name = source.basename().unwrap();
+    let Some(name) = source.basename() else { return; };
     let dest = get_unique_dest(&dest_dir.child(&name));
-    let dest_path = dest_dir.path().unwrap().to_string_lossy().to_string();
+    let Some(dest_path_buf) = dest_dir.path() else { return; };
+    let dest_path = dest_path_buf.to_string_lossy().to_string();
     let display_name = name.to_string_lossy().to_string();
 
     run_with_progress(
@@ -458,8 +460,8 @@ fn get_unique_dest(dest: &gio::File) -> gio::File {
         return dest.clone();
     }
 
-    let parent = dest.parent().unwrap();
-    let basename = dest.basename().unwrap();
+    let Some(parent) = dest.parent() else { return dest.clone(); };
+    let Some(basename) = dest.basename() else { return dest.clone(); };
     let name = basename.to_string_lossy();
 
     let (stem, ext) = if let Some(dot_pos) = name.rfind('.') {

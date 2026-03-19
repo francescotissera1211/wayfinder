@@ -1,5 +1,19 @@
 # Changelog
 
+## 2.2.2
+
+### Fixed
+
+- **Ctrl+A select all** now works in both list and grid views. Previously intercepted by GTK's built-in handler before reaching Wayfinder's selection logic.
+- **Shift+Delete multi-file permanent delete** now works with Space-selected files. Previously only deleted the single focused file.
+- **Extract Here** for zip files with no top-level folder now creates a subfolder named after the archive instead of dumping files loose into the parent directory.
+- **Escape key** now closes the Rename and Create Folder dialogs (previously required clicking Cancel).
+- **Focus restoration** after closing the Rename, Create Folder, and Keyboard Shortcuts dialogs — focus returns to the file list instead of getting lost.
+- **Directory reload** after rename and create folder operations as a fallback when the file monitor doesn't catch the change.
+- **Crash prevention** — replaced unsafe `.unwrap()` calls in file copy/move operations with safe early returns for edge cases (files with no basename, unmounted paths).
+
+---
+
 ## 2.2.1
 
 ### Fixed

@@ -910,6 +910,27 @@ impl WayfinderWindowInner {
                     window.update_status();
                 }
                 glib::Propagation::Stop
+            } else if key == gdk::Key::a
+                && mods.contains(gdk::ModifierType::CONTROL_MASK)
+            {
+                // Ctrl+A: select all files
+                let mut sel = imp.file_selection.borrow_mut();
+                let model = &imp.model.filter_model;
+                for i in 0..model.n_items() {
+                    if let Some(item) = model.item(i) {
+                        if let Some(file) = item.downcast_ref::<FileObject>() {
+                            sel.selected.insert(file.path());
+                        }
+                    }
+                }
+                let count = sel.count();
+                drop(sel);
+                window.announce(
+                    &format!("{} files selected", count),
+                    AccessibleAnnouncementPriority::Medium,
+                );
+                window.update_status();
+                glib::Propagation::Stop
             } else if key == gdk::Key::Escape {
                 // Escape: cancel range selection or clear selection
                 let mut sel = imp.file_selection.borrow_mut();
@@ -1096,6 +1117,27 @@ impl WayfinderWindowInner {
                     );
                     window.update_status();
                 }
+                glib::Propagation::Stop
+            } else if key == gdk::Key::a
+                && mods.contains(gdk::ModifierType::CONTROL_MASK)
+            {
+                // Ctrl+A: select all files
+                let mut sel = imp.file_selection.borrow_mut();
+                let model = &imp.model.filter_model;
+                for i in 0..model.n_items() {
+                    if let Some(item) = model.item(i) {
+                        if let Some(file) = item.downcast_ref::<FileObject>() {
+                            sel.selected.insert(file.path());
+                        }
+                    }
+                }
+                let count = sel.count();
+                drop(sel);
+                window.announce(
+                    &format!("{} files selected", count),
+                    AccessibleAnnouncementPriority::Medium,
+                );
+                window.update_status();
                 glib::Propagation::Stop
             } else if key == gdk::Key::Escape {
                 let mut sel = imp.file_selection.borrow_mut();
