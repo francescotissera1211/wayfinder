@@ -48,7 +48,7 @@ Every GObject type uses a `mod.rs` / `imp.rs` split:
 
 ### Dependencies
 
-- gtk4 0.9 with `v4_14` feature (no libadwaita)
+- gtk4 0.10 with `v4_14` feature (no libadwaita)
 - dirs for XDG user directories
 - chrono for date formatting
 - open for xdg-open integration
