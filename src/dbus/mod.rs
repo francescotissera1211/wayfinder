@@ -24,7 +24,7 @@ pub fn start_service() -> mpsc::Receiver<DbusRequest> {
 
         rt.block_on(async move {
             if let Err(e) = run_service(tx).await {
-                log::warn!("D-Bus FileManager1 service failed: {}", e);
+                log::warn!("D-Bus FileManager1 service failed: {e}");
             }
         });
     });

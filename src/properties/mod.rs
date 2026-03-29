@@ -18,7 +18,7 @@ pub fn show_properties_dialog(file: &FileObject, parent: &gtk::Window) {
         Ok(info) => info,
         Err(e) => {
             parent.announce(
-                &format!("Could not get properties: {}", e),
+                &format!("Could not get properties: {e}"),
                 AccessibleAnnouncementPriority::High,
             );
             return;
@@ -92,25 +92,197 @@ pub fn show_properties_dialog(file: &FileObject, parent: &gtk::Window) {
     if let Ok(metadata) = std::fs::metadata(file.path()) {
         if let Ok(created) = metadata.created() {
             let dt: chrono::DateTime<chrono::Local> = created.into();
-            add_info_row(&grid, row, "Created", &dt.format("%Y-%m-%d %H:%M:%S").to_string());
+            add_info_row(
+                &grid,
+                row,
+                "Created",
+                &dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+            );
             row += 1;
         }
 
         if let Ok(accessed) = metadata.accessed() {
             let dt: chrono::DateTime<chrono::Local> = accessed.into();
-            add_info_row(&grid, row, "Last Opened", &dt.format("%Y-%m-%d %H:%M:%S").to_string());
+            add_info_row(
+                &grid,
+                row,
+                "Last Opened",
+                &dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+            );
             row += 1;
         }
 
         let mode = metadata.permissions().mode();
-        let perm_string = format_permissions(mode);
-        let octal = format!("{:o}", mode & 0o7777);
-        add_info_row(
-            &grid,
-            row,
-            "Permissions",
-            &format!("{} ({})", perm_string, octal),
+        let original_mode = mode;
+
+        // --- Permissions section ---
+        let perm_sep = gtk::Separator::new(gtk::Orientation::Horizontal);
+        perm_sep.set_margin_top(8);
+        perm_sep.set_margin_bottom(8);
+        grid.attach(&perm_sep, 0, row, 2, 1);
+        row += 1;
+
+        let perm_heading = gtk::Label::builder()
+            .label("Permissions")
+            .xalign(0.0)
+            .css_classes(["heading"])
+            .build();
+        grid.attach(&perm_heading, 0, row, 2, 1);
+        row += 1;
+
+        // 3x3 permission grid
+        let perm_grid = gtk::Grid::builder()
+            .row_spacing(4)
+            .column_spacing(12)
+            .build();
+
+        // Header row
+        for (col, header) in ["Read", "Write", "Execute"].iter().enumerate() {
+            let label = gtk::Label::builder()
+                .label(*header)
+                .css_classes(["dim-label"])
+                .build();
+            perm_grid.attach(&label, (col + 1) as i32, 0, 1, 1);
+        }
+
+        // Guard flag to prevent infinite signal loops between checkboxes and octal entry
+        let updating = std::rc::Rc::new(std::cell::RefCell::new(false));
+
+        // Permission bits: (bit, row_label, perm_name)
+        let bit_layout: [(u32, &str, &str); 9] = [
+            (0o400, "Owner", "read"),
+            (0o200, "Owner", "write"),
+            (0o100, "Owner", "execute"),
+            (0o040, "Group", "read"),
+            (0o020, "Group", "write"),
+            (0o010, "Group", "execute"),
+            (0o004, "Others", "read"),
+            (0o002, "Others", "write"),
+            (0o001, "Others", "execute"),
+        ];
+
+        let checkboxes: std::rc::Rc<Vec<(u32, gtk::CheckButton)>> = std::rc::Rc::new(
+            bit_layout
+                .iter()
+                .enumerate()
+                .map(|(i, (bit, row_label, perm_name))| {
+                    let grid_row = (i / 3) as i32 + 1;
+                    let grid_col = (i % 3) as i32 + 1;
+
+                    // Row label (only for first column)
+                    if grid_col == 1 {
+                        let label = gtk::Label::builder()
+                            .label(*row_label)
+                            .xalign(1.0)
+                            .css_classes(["dim-label"])
+                            .build();
+                        perm_grid.attach(&label, 0, grid_row, 1, 1);
+                    }
+
+                    let cb = gtk::CheckButton::new();
+                    cb.set_active(mode & bit != 0);
+                    cb.update_property(&[gtk::accessible::Property::Label(&format!(
+                        "{row_label} {perm_name} permission"
+                    ))]);
+                    perm_grid.attach(&cb, grid_col, grid_row, 1, 1);
+                    (*bit, cb)
+                })
+                .collect(),
         );
+
+        // Octal entry
+        let octal_label = gtk::Label::builder()
+            .label("Octal")
+            .xalign(1.0)
+            .css_classes(["dim-label"])
+            .build();
+        let octal_entry = gtk::Entry::builder()
+            .text(format!("{:o}", mode & 0o7777))
+            .max_length(4)
+            .width_chars(6)
+            .build();
+        octal_entry.update_property(&[gtk::accessible::Property::Label("Octal permissions")]);
+        perm_grid.attach(&octal_label, 0, 4, 1, 1);
+        perm_grid.attach(&octal_entry, 1, 4, 3, 1);
+
+        // Wire checkboxes -> octal entry
+        for (bit, cb) in checkboxes.iter() {
+            let cbs = checkboxes.clone();
+            let entry = octal_entry.clone();
+            let guard = updating.clone();
+            let _bit = *bit; // not used in closure but keeping for clarity
+            cb.connect_toggled(move |_| {
+                if *guard.borrow() {
+                    return;
+                }
+                *guard.borrow_mut() = true;
+                let new_mode: u32 = cbs
+                    .iter()
+                    .filter(|(_, c)| c.is_active())
+                    .map(|(b, _)| b)
+                    .sum();
+                entry.set_text(&format!("{new_mode:o}"));
+                *guard.borrow_mut() = false;
+            });
+        }
+
+        // Wire octal entry -> checkboxes
+        {
+            let cbs = checkboxes.clone();
+            let guard = updating.clone();
+            octal_entry.connect_changed(move |entry| {
+                if *guard.borrow() {
+                    return;
+                }
+                let text = entry.text().to_string();
+                if let Ok(new_mode) = u32::from_str_radix(&text, 8) {
+                    if new_mode <= 0o7777 {
+                        *guard.borrow_mut() = true;
+                        for (bit, cb) in cbs.iter() {
+                            cb.set_active(new_mode & bit != 0);
+                        }
+                        *guard.borrow_mut() = false;
+                    }
+                }
+            });
+        }
+
+        grid.attach(&perm_grid, 0, row, 2, 1);
+        row += 1;
+
+        // Apply button
+        let apply_btn = gtk::Button::with_label("Apply permissions");
+        apply_btn.update_property(&[gtk::accessible::Property::Label("Apply file permissions")]);
+        apply_btn.set_margin_top(4);
+        let fp = file.path();
+        let parent_ref = parent.clone();
+        let cbs_apply = checkboxes.clone();
+        apply_btn.connect_clicked(move |_| {
+            let new_perm_bits: u32 = cbs_apply.iter()
+                .filter(|(_, c)| c.is_active())
+                .map(|(b, _)| b)
+                .sum();
+            // Preserve file type bits, only change permission bits
+            let new_mode = (original_mode & !0o7777) | (new_perm_bits & 0o7777);
+            let perms = std::fs::Permissions::from_mode(new_mode);
+            match std::fs::set_permissions(&fp, perms) {
+                Ok(()) => {
+                    parent_ref.announce(
+                        &format!("Permissions changed to {new_perm_bits:o}"),
+                        AccessibleAnnouncementPriority::Medium,
+                    );
+                }
+                Err(e) => {
+                    let msg = if e.kind() == std::io::ErrorKind::PermissionDenied {
+                        "Permission denied. You must be the file owner or root to change permissions.".to_string()
+                    } else {
+                        format!("Failed to change permissions: {e}")
+                    };
+                    parent_ref.announce(&msg, AccessibleAnnouncementPriority::High);
+                }
+            }
+        });
+        grid.attach(&apply_btn, 0, row, 2, 1);
         row += 1;
     }
 
@@ -143,13 +315,12 @@ pub fn show_properties_dialog(file: &FileObject, parent: &gtk::Window) {
         } else {
             // Build a string list for the dropdown
             let app_names: Vec<String> = apps.iter().map(|a| a.name().to_string()).collect();
-            let string_list = gtk::StringList::new(&app_names.iter().map(|s| s.as_str()).collect::<Vec<_>>());
+            let string_list =
+                gtk::StringList::new(&app_names.iter().map(|s| s.as_str()).collect::<Vec<_>>());
 
             let dropdown = gtk::DropDown::new(Some(string_list), gtk::Expression::NONE);
             dropdown.set_hexpand(true);
-            dropdown.update_property(&[gtk::accessible::Property::Label(
-                "Open this file with",
-            )]);
+            dropdown.update_property(&[gtk::accessible::Property::Label("Open this file with")]);
 
             // Check for a per-file association first, then fall back to MIME default
             let file_path = file.path();
@@ -214,13 +385,13 @@ pub fn show_properties_dialog(file: &FileObject, parent: &gtk::Window) {
                 if let Some(app) = apps_clone.get(idx) {
                     if let Err(e) = app.set_as_default_for_type(&ct) {
                         parent_win.announce(
-                            &format!("Failed to set default: {}", e),
+                            &format!("Failed to set default: {e}"),
                             AccessibleAnnouncementPriority::High,
                         );
                     } else {
                         let name = app.name();
                         parent_win.announce(
-                            &format!("{} set as default for all {} files", name, ct),
+                            &format!("{name} set as default for all {ct} files"),
                             AccessibleAnnouncementPriority::Medium,
                         );
                     }
@@ -262,21 +433,4 @@ fn add_info_row(grid: &gtk::Grid, row: i32, label_text: &str, value: &str) {
 
     grid.attach(&label, 0, row, 1, 1);
     grid.attach(&entry, 1, row, 1, 1);
-}
-
-fn format_permissions(mode: u32) -> String {
-    let mut s = String::with_capacity(9);
-    let flags = [
-        (0o400, 'r'), (0o200, 'w'), (0o100, 'x'),
-        (0o040, 'r'), (0o020, 'w'), (0o010, 'x'),
-        (0o004, 'r'), (0o002, 'w'), (0o001, 'x'),
-    ];
-    for (bit, ch) in flags {
-        if mode & bit != 0 {
-            s.push(ch);
-        } else {
-            s.push('-');
-        }
-    }
-    s
 }

@@ -20,7 +20,8 @@ pub fn register_shortcuts(window: &super::window::WayfinderWindow) {
     add_shortcut(&controller, "<Ctrl>h", "win.toggle-hidden");
     add_shortcut(&controller, "<Ctrl>1", "win.view-grid");
     add_shortcut(&controller, "<Ctrl>2", "win.view-list");
-    add_shortcut(&controller, "<Ctrl><Shift>s", "win.toggle-sidebar");
+    add_shortcut(&controller, "F3", "win.toggle-sidebar");
+    add_shortcut(&controller, "F4", "win.toggle-breadcrumb");
 
     // Search
     add_shortcut(&controller, "<Ctrl>f", "win.search");
@@ -36,6 +37,7 @@ pub fn register_shortcuts(window: &super::window::WayfinderWindow) {
     add_shortcut(&controller, "Delete", "win.trash");
     add_shortcut(&controller, "<Shift>Delete", "win.delete");
     add_shortcut(&controller, "F2", "win.rename");
+    add_shortcut(&controller, "<Ctrl><Shift>F2", "win.batch-rename");
     add_shortcut(&controller, "<Ctrl><Shift>n", "win.new-folder");
     add_shortcut(&controller, "<Ctrl>a", "win.select-all");
 
@@ -58,6 +60,12 @@ pub fn register_shortcuts(window: &super::window::WayfinderWindow) {
 
     // Open terminal here
     add_shortcut(&controller, "<Ctrl>grave", "win.terminal-here");
+
+    // Zoom
+    add_shortcut(&controller, "<Ctrl>plus", "win.zoom-in");
+    add_shortcut(&controller, "<Ctrl>equal", "win.zoom-in");
+    add_shortcut(&controller, "<Ctrl>minus", "win.zoom-out");
+    add_shortcut(&controller, "<Ctrl>0", "win.zoom-reset");
 
     // Shortcuts help
     add_shortcut(&controller, "<Ctrl>question", "win.show-shortcuts");

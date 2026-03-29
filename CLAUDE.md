@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Build Commands
 
@@ -8,47 +8,99 @@ This file provides guidance to Claude Code when working with code in this reposi
 cargo build                    # Debug build
 cargo build --release          # Optimized build
 cargo check                    # Fast type-check without codegen
-cargo clippy                   # Lint
+cargo clippy                   # Lint (must pass with zero warnings)
 cargo fmt                      # Format
-cargo run                      # Run (opens home directory)
+cargo run                      # Run main file manager
 ```
 
-No test suite yet. All builds go through cargo.
+Two binaries: `wayfinder` (main app) and `wayfinder-portal` (XDG Desktop Portal backend). No test suite.
 
 ## Architecture
 
-Accessible GTK4 file manager in Rust. Designed to work without a desktop environment (tiled WM friendly). Accessibility via Orca screen reader is the primary design constraint.
+Accessible GTK4 file manager in Rust. Orca screen reader accessibility is the **primary design constraint** — every widget needs `update_property(&[Property::Label(...)])` and state changes should call `window.announce()` (GTK 4.14). No libadwaita dependency; runs on tiled WMs without a desktop environment.
 
 ### GObject Two-Module Pattern
 
-Every GObject type uses a `mod.rs` / `imp.rs` split:
-- **`mod.rs`** — public wrapper type via `glib::wrapper!`, constructor, public API
-- **`imp.rs`** — `ObjectSubclass` impl with struct fields, `ObjectImpl::constructed()` for setup
+Every GObject type (`app/`, `window/`, `file_object/`, `sidebar/`, `views/list_view/`, `views/grid_view/`) uses:
+- **`mod.rs`** — `glib::wrapper!` macro, constructor, public API methods
+- **`imp.rs`** — `ObjectSubclass` impl, struct fields (usually `RefCell<T>` / `Cell<T>`), `ObjectImpl::constructed()` for UI assembly
+
+Logic-only modules (`file_model/`, `file_ops/`, `navigation/`, `search/`, `clipboard/`, `state.rs`, `actions/`, `context_menu/`, `shortcuts/`, `dbus/`) have no `imp.rs`. Note: `dbus/`, `shortcuts/`, `context_menu/`, `app/`, `window/`, and `portal/` are binary-internal (not re-exported via `lib.rs`).
 
 ### Data Flow
 
-`gio::File` → `enumerate_children` → `ListStore<FileObject>` → `SortListModel` (dirs-first + alpha) → `FilterListModel` (hidden files) → `SingleSelection` → `ColumnView`
+```
+gio::File → enumerate_children → ListStore<FileObject>
+  → SortListModel (dirs-first + alpha via CustomSorter)
+  → FilterListModel (hidden files via CustomFilter)
+  → FilterListModel (search via CustomFilter)
+  → SingleSelection → ColumnView / GridView
+```
 
-### Key Patterns
+### Threading Model
 
-- **Accessible properties** use enum variants: `Property::Label("text")`, passed as `&[Property]` to `update_property()`. They are NOT GObject properties.
-- **`announce()`** (GTK 4.14) for screen reader announcements on state changes.
-- **Navigation shortcuts** use `GtkShortcutController` with `NamedAction` pointing to `gio::SimpleAction`s on the window. Action names use `nav.*` and `view.*` prefixes.
-- **Window subclass `@implements`** must include `ConstraintTarget`, `Accessible`, `Buildable`, `Native`, `Root`, `ShortcutManager`.
+GObject types (`gio::ListStore`, `gio::FileInfo`, `gtk::CustomSorter`) are **NOT Send**. All GTK/GObject access must happen on the main thread.
 
-### Module Responsibilities
+**Channel + polling pattern** (used throughout for background → main thread):
+1. Spawn `std::thread` for blocking work
+2. Send results via `std::sync::mpsc::channel`
+3. Poll with `glib::timeout_add_local()` on main thread
+4. Construct GObject types only after receiving plain Rust data
 
-- `app/` — Application subclass, creates windows
-- `window/` — Main window: headerbar, content area, actions, navigation logic
-- `file_object/` — GObject data model for a single file entry (`#[derive(Properties)]`)
-- `file_model/` — Directory loading into ListStore, sorting, filtering
-- `views/list_view/` — GtkColumnView with Name/Size/Modified/Kind columns
-- `navigation/` — Back/forward/up history stack (plain Rust, not GObject)
-- `shortcuts/` — Keyboard shortcut registration
+This pattern appears in: folder size calculation, FUSE async file monitor, D-Bus service, portal backend, custom action completion announcements, compress dialog.
+
+**Thread-safe data extraction**: `FileInfoData` struct (plain `String`/`u64`/`i64`/`bool`) is extracted from `gio::FileInfo` on worker threads, sent through channels, then converted to `FileObject` on the main thread via `FileObject::from_data()`.
+
+### FUSE Mount Handling
+
+`is_fuse_mount()` reads `/proc/mounts` to detect rclone, sshfs, etc. On FUSE paths:
+- Folder size calculation is **skipped** (shows "—")
+- File monitor uses `query_info_async()` with 5-second cancellable timeout instead of sync calls
+- `trash_or_delete()` returns `NeedsPermanentDelete` when trash isn't supported, triggering a confirmation dialog
+
+### Action Registration Pattern
+
+Window actions use `gio::SimpleAction` registered via `window.add_action()`. Shortcuts use `GtkShortcutController` with `NamedAction` pointing to `win.action-name`. All shortcuts are centralized in `shortcuts/mod.rs`. Actions are set up in `window/imp.rs::setup_actions()`.
+
+**Important**: `Ctrl+Shift+<number>` shortcuts do NOT work reliably in GTK4 due to keyboard layout key translation (Shift+1 produces `!` not `1`). `Ctrl+Shift+<letter>` shortcuts may also be unreliable on some layouts. Use function keys (F3, F4, etc.) for toggles instead.
+
+### Focus / Tab Navigation
+
+Tab from the file list focuses navigation buttons (back/forward/up) then the location entry. Shift+Tab from the file list goes to the location entry. Custom Tab handlers are in `connect_list_key_navigation()` and `connect_grid_key_navigation()` (imp.rs).
+
+**GTK4 ListBox Tab gotcha**: GTK4's ListBox internally consumes Tab to cycle between rows. External `EventControllerKey` (even at Capture phase) cannot intercept Tab before ListBox handles it. Do NOT attempt to add Tab navigation out of the sidebar's `places_list` — it will silently fail. The `set_tab_behavior(ListTabBehavior::Leave)` API only exists in GTK 4.18+, and this project targets `v4_14`.
+
+**Window re-focus**: `connect_is_active_notify` in `imp.rs` restores focus to the selected file item when the window regains focus (e.g. after Alt-Tab from another app).
+
+### Toggle Buttons
+
+Sidebar and breadcrumb bar have paired toggle buttons + actions. The button stores the visual state; the action (for keyboard shortcut) flips the button, which triggers its `connect_toggled` callback. This keeps button state and widget visibility in sync. Both persist visibility via `state.rs`.
+
+### Custom Actions System
+
+`.desktop` files loaded from 6 directories (user → system priority). Format: `[Desktop Entry]` with `Name=`, `Exec=` (%f/%F/%u substitution), `TryExec=` (hides if command missing), `MimeType=`. First match wins for deduplication. All actions (including compress) run in a background thread with a pulsing progress dialog shown via `show_action_progress()`. The dialog closes on completion and announces success/failure via screen reader. Context menu actions pass all selected files (via `get_selected_files()`), so multi-file compress/extract works correctly.
+
+### State Persistence
+
+`~/.config/wayfinder/state` — simple `key=value` text file. `state.rs` provides `save_*`/`load_*` pairs for directory, view mode, hidden files, sidebar, window size, sort state, zoom level, file app associations. `~/.config/wayfinder/windows` stores multi-window session directories (one path per line) for session restore on next launch. Session is saved in `ApplicationImpl::shutdown()` and restored in `activate()`. The `app/imp.rs` collects all open window directories on shutdown and recreates them on next launch.
+
+### Portal Binary
+
+`wayfinder-portal` implements `org.freedesktop.impl.portal.FileChooser` via zbus/tokio. Runs a tokio runtime in a background thread for D-Bus, communicates with the GTK main loop via channels. Shares UI patterns with the main app but is a separate binary with its own `main()`.
+
+### Key Modules
+
+- `window/` — Main window (~3,300 lines across mod.rs/imp.rs): all navigation, file operations, dialogs, breadcrumb, zoom. `paste_from()` uses a `pasting` flag to prevent concurrent paste operations.
+- `file_model/` — Directory loading, sorting, filtering, file monitoring, FUSE detection
+- `file_ops/` — Copy/move with progress dialog, trash, delete, rename, conflict resolution (Replace/Skip/Rename), cross-device directory move fallback. `on_complete` callback is guaranteed to fire on all code paths (success, error, cancel, early return).
+- `sidebar/` — Places, bookmarks (GTK3 format), volumes (GIO VolumeMonitor), editable order/visibility
+- `context_menu/` — Accessible popover menus with arrow-key navigation and custom actions
+- `actions/` — Desktop file parser, TryExec detection, Nautilus script compatibility, completion announcements
+- `properties/` — File properties dialog with interactive permission editor (3×3 checkbox grid + octal entry)
+- `clipboard/` — `thread_local!` global clipboard for cross-window copy/paste
 
 ### Dependencies
 
-- gtk4 0.9 with `v4_14` feature (no libadwaita)
-- dirs for XDG user directories
-- chrono for date formatting
-- open for xdg-open integration
+- **gtk4 0.10** with `v4_14` feature
+- **zbus 5** (tokio) + **tokio 1** for D-Bus (portal and FileManager1)
+- **clap 4**, **dirs 6**, **chrono 0.4**, **open 5**, **log 0.4**, **env_logger 0.11**

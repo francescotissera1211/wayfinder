@@ -3,13 +3,10 @@
 mod chooser;
 mod dbus;
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 use std::sync::mpsc;
 
 use gtk::glib;
-use gtk::prelude::*;
 use zbus::zvariant::OwnedValue;
 
 fn main() {
@@ -98,11 +95,11 @@ fn main() {
                     let response = if result.cancelled { 1u32 } else { 0u32 };
                     let mut results = HashMap::<String, OwnedValue>::new();
                     if !result.cancelled {
-                        results.insert(
-                            "uris".to_string(),
+                        if let Ok(val) =
                             OwnedValue::try_from(zbus::zvariant::Value::from(result.uris))
-                                .unwrap(),
-                        );
+                        {
+                            results.insert("uris".to_string(), val);
+                        }
                     }
                     let _ = response_tx.send((response, results));
                 }

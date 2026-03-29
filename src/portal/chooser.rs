@@ -91,9 +91,7 @@ pub fn show_chooser(
         .hexpand(true)
         .placeholder_text("Path")
         .build();
-    location_entry.update_property(&[
-        gtk::accessible::Property::Label("Location"),
-    ]);
+    location_entry.update_property(&[gtk::accessible::Property::Label("Location")]);
     header.set_title_widget(Some(&location_entry));
 
     dlg.set_titlebar(Some(&header));
@@ -152,10 +150,7 @@ pub fn show_chooser(
     bottom_bar.append(&accept_btn);
 
     // Status label
-    let status_label = gtk::Label::builder()
-        .xalign(0.0)
-        .margin_start(8)
-        .build();
+    let status_label = gtk::Label::builder().xalign(0.0).margin_start(8).build();
 
     // Layout
     let content_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -197,12 +192,7 @@ pub fn show_chooser(
         let le = location_entry.clone();
         col_controller.connect_key_pressed(move |_ctrl, key, _code, mods| {
             use gtk::gdk;
-            if key == gdk::Key::Tab && !mods.contains(gdk::ModifierType::SHIFT_MASK) {
-                le.grab_focus();
-                glib::Propagation::Stop
-            } else if key == gdk::Key::ISO_Left_Tab
-                || (key == gdk::Key::Tab && mods.contains(gdk::ModifierType::SHIFT_MASK))
-            {
+            if key == gdk::Key::Tab || key == gdk::Key::ISO_Left_Tab {
                 le.grab_focus();
                 glib::Propagation::Stop
             } else if key == gdk::Key::Left && !mods.contains(gdk::ModifierType::ALT_MASK) {
@@ -310,7 +300,18 @@ pub fn show_chooser(
         let d = dlg.clone();
         back_btn.connect_clicked(move |_| {
             if let Some(path) = nav.borrow_mut().go_back().cloned() {
-                load_dir(&model, &path.to_string_lossy(), &le, &sl, &nav, &bb, &fb, &ub, &sel, &d);
+                load_dir(
+                    &model,
+                    &path.to_string_lossy(),
+                    &le,
+                    &sl,
+                    &nav,
+                    &bb,
+                    &fb,
+                    &ub,
+                    &sel,
+                    &d,
+                );
             }
         });
     }
@@ -326,7 +327,18 @@ pub fn show_chooser(
         let d = dlg.clone();
         forward_btn.connect_clicked(move |_| {
             if let Some(path) = nav.borrow_mut().go_forward().cloned() {
-                load_dir(&model, &path.to_string_lossy(), &le, &sl, &nav, &bb, &fb, &ub, &sel, &d);
+                load_dir(
+                    &model,
+                    &path.to_string_lossy(),
+                    &le,
+                    &sl,
+                    &nav,
+                    &bb,
+                    &fb,
+                    &ub,
+                    &sel,
+                    &d,
+                );
             }
         });
     }
@@ -343,7 +355,18 @@ pub fn show_chooser(
         up_btn.connect_clicked(move |_| {
             if let Some(parent) = nav.borrow().go_up() {
                 nav.borrow_mut().navigate_to(parent.clone());
-                load_dir(&model, &parent.to_string_lossy(), &le, &sl, &nav, &bb, &fb, &ub, &sel, &d);
+                load_dir(
+                    &model,
+                    &parent.to_string_lossy(),
+                    &le,
+                    &sl,
+                    &nav,
+                    &bb,
+                    &fb,
+                    &ub,
+                    &sel,
+                    &d,
+                );
             }
         });
     }
@@ -449,9 +472,14 @@ pub fn show_chooser(
                         load_dir(
                             &model_for_enter,
                             &path,
-                            &le2, &sl2, &nav_for_enter,
-                            &bb2, &fb2, &ub2,
-                            &sel_for_enter, &d3,
+                            &le2,
+                            &sl2,
+                            &nav_for_enter,
+                            &bb2,
+                            &fb2,
+                            &ub2,
+                            &sel_for_enter,
+                            &d3,
                         );
                         return glib::Propagation::Stop;
                     }
@@ -491,11 +519,11 @@ pub fn show_chooser(
                 if !name.is_empty() {
                     let dir = model_accept.current_path();
                     let full_path = if dir == "/" {
-                        format!("/{}", name)
+                        format!("/{name}")
                     } else {
-                        format!("{}/{}", dir, name)
+                        format!("{dir}/{name}")
                     };
-                    Some(format!("file://{}", full_path))
+                    Some(format!("file://{full_path}"))
                 } else {
                     None
                 }
@@ -504,10 +532,7 @@ pub fn show_chooser(
             }
         } else {
             // For Open: use the space-selected file
-            sf_accept
-                .borrow()
-                .as_ref()
-                .map(|p| format!("file://{}", p))
+            sf_accept.borrow().as_ref().map(|p| format!("file://{p}"))
         };
 
         if let Some(uri) = uri {
@@ -519,10 +544,7 @@ pub fn show_chooser(
             }
             d_accept.close();
         } else {
-            d_accept.announce(
-                "No file selected",
-                AccessibleAnnouncementPriority::High,
-            );
+            d_accept.announce("No file selected", AccessibleAnnouncementPriority::High);
         }
     });
 
@@ -568,22 +590,19 @@ fn load_dir(
             forward_btn.set_sensitive(nav.borrow().can_go_forward());
             up_btn.set_sensitive(path != "/");
             let count = model.item_count();
-            status_label.set_text(&format!("{} items", count));
+            status_label.set_text(&format!("{count} items"));
             selection.set_selected(gtk::INVALID_LIST_POSITION); // Clear selection
             let dir_name = std::path::Path::new(path)
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| path.to_string());
             window.announce(
-                &format!("Opened {}, {} items", dir_name, count),
+                &format!("Opened {dir_name}, {count} items"),
                 AccessibleAnnouncementPriority::Medium,
             );
         }
         Err(e) => {
-            window.announce(
-                &format!("Error: {}", e),
-                AccessibleAnnouncementPriority::High,
-            );
+            window.announce(&format!("Error: {e}"), AccessibleAnnouncementPriority::High);
         }
     }
 }

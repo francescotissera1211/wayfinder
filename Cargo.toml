@@ -1,6 +1,6 @@
 [package]
 name = "wayfinder"
-version = "2.2.3"
+version = "2.3.0"
 edition = "2021"
 description = "Accessible GTK4 file manager"
 license = "GPL-3.0-or-later"
@@ -14,7 +14,7 @@ name = "wayfinder-portal"
 path = "src/portal/main.rs"
 
 [dependencies]
-gtk = { package = "gtk4", version = "0.9", features = ["v4_14"] }
+gtk = { package = "gtk4", version = "0.10", features = ["v4_14"] }
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
 log = "0.4"

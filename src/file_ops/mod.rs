@@ -14,6 +14,28 @@ pub fn trash_file(file: &gio::File) -> Result<(), glib::Error> {
     Ok(())
 }
 
+/// Result of attempting to trash a file.
+pub enum TrashResult {
+    /// File was successfully moved to the Bin.
+    Trashed,
+    /// Trash is not supported (e.g. FUSE mount) — caller should offer
+    /// permanent deletion instead.
+    NeedsPermanentDelete,
+}
+
+/// Try to trash a file; if the filesystem doesn't support trash (e.g. FUSE
+/// mounts like rclone), return `NeedsPermanentDelete` so the caller can
+/// offer a confirmation dialog.
+pub fn trash_or_delete(file: &gio::File) -> Result<TrashResult, glib::Error> {
+    match file.trash(gio::Cancellable::NONE) {
+        Ok(()) => Ok(TrashResult::Trashed),
+        Err(e) if e.matches(gio::IOErrorEnum::NotSupported) => {
+            Ok(TrashResult::NeedsPermanentDelete)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 pub fn delete_file_recursive(file: &gio::File) -> Result<(), glib::Error> {
     let file_type = file.query_file_type(
         gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
@@ -87,8 +109,8 @@ pub fn empty_trash() -> Result<u32, glib::Error> {
     let mut count = 0u32;
     while let Some(info) = enumerator.next_file(gio::Cancellable::NONE)? {
         let child = trash.child(info.name());
-        if let Err(e) = child.delete(gio::Cancellable::NONE) {
-            log::warn!("Failed to delete Bin item: {}", e);
+        if let Err(e) = delete_file_recursive(&child) {
+            log::warn!("Failed to delete Bin item: {e}");
         } else {
             count += 1;
         }
@@ -108,6 +130,40 @@ pub fn create_folder(parent: &gio::File, name: &str) -> Result<gio::File, glib::
     Ok(folder)
 }
 
+/// User's choice when a destination file already exists.
+enum ConflictChoice {
+    Replace,
+    Skip,
+    Rename(gio::File),
+}
+
+/// Show a conflict resolution dialog when the destination already exists.
+/// Returns the user's choice via a channel.
+fn show_conflict_dialog(
+    name: &str,
+    dest: &gio::File,
+    parent_window: &gtk::Window,
+    callback: impl FnOnce(ConflictChoice) + 'static,
+) {
+    let dialog = gtk::AlertDialog::builder()
+        .message(format!("{name} already exists"))
+        .detail("What would you like to do?")
+        .buttons(["Skip", "Rename (keep both)", "Replace"])
+        .cancel_button(0)
+        .default_button(0)
+        .build();
+
+    let dest = dest.clone();
+    dialog.choose(Some(parent_window), gio::Cancellable::NONE, move |result| {
+        let choice = match result {
+            Ok(2) => ConflictChoice::Replace,
+            Ok(1) => ConflictChoice::Rename(get_unique_dest(&dest)),
+            _ => ConflictChoice::Skip,
+        };
+        callback(choice);
+    });
+}
+
 /// Copy or move with a progress dialog.
 /// `on_complete` is called on the main thread after a successful operation.
 pub fn copy_with_progress(
@@ -116,21 +172,82 @@ pub fn copy_with_progress(
     parent_window: &gtk::Window,
     on_complete: Option<Box<dyn FnOnce() + 'static>>,
 ) {
-    let Some(name) = source.basename() else { return; };
-    let dest = get_unique_dest(&dest_dir.child(&name));
-    let Some(dest_path_buf) = dest_dir.path() else { return; };
+    let Some(name) = source.basename() else {
+        if let Some(cb) = on_complete {
+            cb();
+        }
+        return;
+    };
+    let dest = dest_dir.child(&name);
+    let Some(dest_path_buf) = dest_dir.path() else {
+        if let Some(cb) = on_complete {
+            cb();
+        }
+        return;
+    };
     let dest_path = dest_path_buf.to_string_lossy().to_string();
     let display_name = name.to_string_lossy().to_string();
 
-    run_with_progress(
-        source.clone(),
-        dest,
-        display_name,
-        dest_path,
-        false,
-        parent_window,
-        on_complete,
-    );
+    if dest.query_exists(gio::Cancellable::NONE) {
+        let source = source.clone();
+        let parent = parent_window.clone();
+        let dialog_name = display_name.clone();
+        let dialog_dest = dest.clone();
+        show_conflict_dialog(
+            &dialog_name,
+            &dialog_dest,
+            parent_window,
+            move |choice| match choice {
+                ConflictChoice::Skip => {
+                    parent.announce("Skipped", AccessibleAnnouncementPriority::Medium);
+                    if let Some(cb) = on_complete {
+                        cb();
+                    }
+                }
+                ConflictChoice::Replace => {
+                    run_with_progress(
+                        ProgressOp {
+                            source,
+                            dest,
+                            display_name,
+                            dest_path,
+                            is_move: false,
+                            replace: true,
+                        },
+                        &parent,
+                        on_complete,
+                    );
+                }
+                ConflictChoice::Rename(renamed) => {
+                    run_with_progress(
+                        ProgressOp {
+                            source,
+                            dest: renamed,
+                            display_name,
+                            dest_path,
+                            is_move: false,
+                            replace: false,
+                        },
+                        &parent,
+                        on_complete,
+                    );
+                }
+            },
+        );
+    } else {
+        run_with_progress(
+            ProgressOp {
+                source: source.clone(),
+                dest,
+                display_name,
+                dest_path,
+                is_move: false,
+                replace: false,
+            },
+            parent_window,
+            on_complete,
+        );
+    }
 }
 
 pub fn move_with_progress(
@@ -139,21 +256,106 @@ pub fn move_with_progress(
     parent_window: &gtk::Window,
     on_complete: Option<Box<dyn FnOnce() + 'static>>,
 ) {
-    let Some(name) = source.basename() else { return; };
-    let dest = get_unique_dest(&dest_dir.child(&name));
-    let Some(dest_path_buf) = dest_dir.path() else { return; };
+    let Some(name) = source.basename() else {
+        if let Some(cb) = on_complete {
+            cb();
+        }
+        return;
+    };
+    let dest = dest_dir.child(&name);
+    let Some(dest_path_buf) = dest_dir.path() else {
+        if let Some(cb) = on_complete {
+            cb();
+        }
+        return;
+    };
     let dest_path = dest_path_buf.to_string_lossy().to_string();
     let display_name = name.to_string_lossy().to_string();
 
-    run_with_progress(
-        source.clone(),
-        dest,
-        display_name,
-        dest_path,
-        true,
-        parent_window,
-        on_complete,
+    if dest.query_exists(gio::Cancellable::NONE) {
+        let source = source.clone();
+        let parent = parent_window.clone();
+        let dialog_name = display_name.clone();
+        let dialog_dest = dest.clone();
+        show_conflict_dialog(
+            &dialog_name,
+            &dialog_dest,
+            parent_window,
+            move |choice| match choice {
+                ConflictChoice::Skip => {
+                    parent.announce("Skipped", AccessibleAnnouncementPriority::Medium);
+                    if let Some(cb) = on_complete {
+                        cb();
+                    }
+                }
+                ConflictChoice::Replace => {
+                    run_with_progress(
+                        ProgressOp {
+                            source,
+                            dest,
+                            display_name,
+                            dest_path,
+                            is_move: true,
+                            replace: true,
+                        },
+                        &parent,
+                        on_complete,
+                    );
+                }
+                ConflictChoice::Rename(renamed) => {
+                    run_with_progress(
+                        ProgressOp {
+                            source,
+                            dest: renamed,
+                            display_name,
+                            dest_path,
+                            is_move: true,
+                            replace: false,
+                        },
+                        &parent,
+                        on_complete,
+                    );
+                }
+            },
+        );
+    } else {
+        run_with_progress(
+            ProgressOp {
+                source: source.clone(),
+                dest,
+                display_name,
+                dest_path,
+                is_move: true,
+                replace: false,
+            },
+            parent_window,
+            on_complete,
+        );
+    }
+}
+
+/// Recursively delete a directory using a cancellable (for cross-device move fallback).
+fn delete_recursive_gio(
+    file: &gio::File,
+    cancellable: &gio::Cancellable,
+) -> Result<(), glib::Error> {
+    let file_type = file.query_file_type(
+        gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+        Some(cancellable),
     );
+    if file_type == gio::FileType::Directory {
+        let enumerator = file.enumerate_children(
+            "standard::name,standard::type",
+            gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+            Some(cancellable),
+        )?;
+        while let Some(info) = enumerator.next_file(Some(cancellable))? {
+            let child = file.child(info.name());
+            delete_recursive_gio(&child, cancellable)?;
+        }
+    }
+    file.delete(Some(cancellable))?;
+    Ok(())
 }
 
 /// Recursively copy a directory and its contents.
@@ -162,9 +364,33 @@ fn copy_directory_recursive(
     dest: &gio::File,
     cancellable: &gio::Cancellable,
     progress: &Arc<Mutex<(i64, i64)>>,
+    replace: bool,
 ) -> Result<(), glib::Error> {
-    // Create the destination directory
-    dest.make_directory_with_parents(Some(cancellable))?;
+    // When replacing, delete the existing destination directory first so we
+    // get a true replacement instead of a merge.
+    if replace {
+        let dest_type = dest.query_file_type(
+            gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+            Some(cancellable),
+        );
+        if dest_type == gio::FileType::Directory {
+            delete_recursive_gio(dest, cancellable)?;
+        }
+    }
+
+    // Create the destination directory (ignore "already exists" for non-replace
+    // cases, e.g. copying into an existing tree on FUSE mounts)
+    match dest.make_directory_with_parents(Some(cancellable)) {
+        Ok(()) => {}
+        Err(e) if e.matches(gio::IOErrorEnum::Exists) => {}
+        Err(e) => return Err(e),
+    }
+
+    let flags = if replace {
+        gio::FileCopyFlags::OVERWRITE
+    } else {
+        gio::FileCopyFlags::NONE
+    };
 
     let enumerator = source.enumerate_children(
         "standard::name,standard::type",
@@ -184,12 +410,12 @@ fn copy_directory_recursive(
         let child_dest = dest.child(info.name());
 
         if info.file_type() == gio::FileType::Directory {
-            copy_directory_recursive(&child_source, &child_dest, cancellable, progress)?;
+            copy_directory_recursive(&child_source, &child_dest, cancellable, progress, replace)?;
         } else {
             let ps = progress.clone();
             child_source.copy(
                 &child_dest,
-                gio::FileCopyFlags::NONE,
+                flags,
                 Some(cancellable),
                 Some(&mut |current, total| {
                     let mut state = ps.lock().unwrap();
@@ -202,20 +428,34 @@ fn copy_directory_recursive(
     Ok(())
 }
 
-fn run_with_progress(
+struct ProgressOp {
     source: gio::File,
     dest: gio::File,
     display_name: String,
     dest_path: String,
     is_move: bool,
+    replace: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_with_progress(
+    op: ProgressOp,
     parent_window: &gtk::Window,
     on_complete: Option<Box<dyn FnOnce() + 'static>>,
 ) {
+    let ProgressOp {
+        source,
+        dest,
+        display_name,
+        dest_path,
+        is_move,
+        replace,
+    } = op;
     let op_name = if is_move { "Moving" } else { "Copying" };
 
     // Build progress dialog
     let dlg = gtk::Window::builder()
-        .title(format!("{} {}", op_name, display_name))
+        .title(format!("{op_name} {display_name}"))
         .modal(true)
         .transient_for(parent_window)
         .default_width(450)
@@ -229,13 +469,12 @@ fn run_with_progress(
     vbox.set_margin_end(12);
 
     let title_label = gtk::Label::builder()
-        .label(format!("{} {} to {}", op_name, display_name, dest_path))
+        .label(format!("{op_name} {display_name} to {dest_path}"))
         .xalign(0.0)
         .wrap(true)
         .build();
     title_label.update_property(&[gtk::accessible::Property::Label(&format!(
-        "{} {} to {}",
-        op_name, display_name, dest_path
+        "{op_name} {display_name} to {dest_path}"
     ))]);
 
     let progress_bar = gtk::ProgressBar::new();
@@ -254,8 +493,7 @@ fn run_with_progress(
     ]);
 
     let cancel_button = gtk::Button::with_label("Cancel");
-    cancel_button
-        .update_property(&[gtk::accessible::Property::Label("Cancel transfer")]);
+    cancel_button.update_property(&[gtk::accessible::Property::Label("Cancel transfer")]);
 
     let button_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     button_box.set_halign(gtk::Align::End);
@@ -321,8 +559,22 @@ fn run_with_progress(
 
     // Run the copy/move in a real OS thread, communicate result via channel
     let ps = progress_state.clone();
-    let source_path = source.path().unwrap().to_string_lossy().to_string();
-    let dest_path_str = dest.path().unwrap().to_string_lossy().to_string();
+    let Some(source_path_buf) = source.path() else {
+        dlg.close();
+        if let Some(cb) = on_complete {
+            cb();
+        }
+        return;
+    };
+    let source_path = source_path_buf.to_string_lossy().to_string();
+    let Some(dest_path_buf) = dest.path() else {
+        dlg.close();
+        if let Some(cb) = on_complete {
+            cb();
+        }
+        return;
+    };
+    let dest_path_str = dest_path_buf.to_string_lossy().to_string();
     let cancellable_clone = cancellable.clone();
 
     // Channel for thread -> main thread result
@@ -334,27 +586,64 @@ fn run_with_progress(
         let src = gio::File::for_path(&source_path);
         let dst = gio::File::for_path(&dest_path_str);
 
+        let flags = if replace {
+            gio::FileCopyFlags::OVERWRITE
+        } else {
+            gio::FileCopyFlags::NONE
+        };
+
         let result = if is_move {
-            src.move_(
+            let move_result = src.move_(
                 &dst,
-                gio::FileCopyFlags::NONE,
+                flags,
                 Some(&cancellable_clone),
                 Some(&mut |current, total| {
                     let mut state = ps.lock().unwrap();
                     *state = (current, total);
                 }),
-            )
+            );
+            // Cross-device directory move: GIO can't move directories across
+            // filesystems (e.g. local → rclone FUSE mount). Fall back to
+            // recursive copy + delete source.
+            match move_result {
+                Err(ref e)
+                    if e.matches(gio::IOErrorEnum::NotSupported)
+                        || e.matches(gio::IOErrorEnum::WouldMerge)
+                        || e.matches(gio::IOErrorEnum::WouldRecurse) =>
+                {
+                    let file_type = src.query_file_type(
+                        gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+                        gio::Cancellable::NONE,
+                    );
+                    if file_type == gio::FileType::Directory {
+                        copy_directory_recursive(&src, &dst, &cancellable_clone, &ps, replace)
+                            .and_then(|()| delete_recursive_gio(&src, &cancellable_clone))
+                    } else {
+                        src.copy(
+                            &dst,
+                            flags,
+                            Some(&cancellable_clone),
+                            Some(&mut |current, total| {
+                                let mut state = ps.lock().unwrap();
+                                *state = (current, total);
+                            }),
+                        )
+                        .and_then(|()| src.delete(Some(&cancellable_clone)))
+                    }
+                }
+                other => other,
+            }
         } else {
             let file_type = src.query_file_type(
                 gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
                 gio::Cancellable::NONE,
             );
             if file_type == gio::FileType::Directory {
-                copy_directory_recursive(&src, &dst, &cancellable_clone, &ps)
+                copy_directory_recursive(&src, &dst, &cancellable_clone, &ps, replace)
             } else {
                 src.copy(
                     &dst,
-                    gio::FileCopyFlags::NONE,
+                    flags,
                     Some(&cancellable_clone),
                     Some(&mut |current, total| {
                         let mut state = ps.lock().unwrap();
@@ -386,7 +675,7 @@ fn run_with_progress(
             match result {
                 Ok(()) => {
                     parent_window.announce(
-                        &format!("{} {}", op_name_str, display_name_done),
+                        &format!("{op_name_str} {display_name_done}"),
                         AccessibleAnnouncementPriority::Medium,
                     );
                     if let Some(cb) = on_complete.borrow_mut().take() {
@@ -394,16 +683,20 @@ fn run_with_progress(
                     }
                 }
                 Err(e) if e.contains("cancelled") || e.contains("Cancelled") => {
-                    parent_window.announce(
-                        "Transfer cancelled",
-                        AccessibleAnnouncementPriority::Medium,
-                    );
+                    parent_window
+                        .announce("Transfer cancelled", AccessibleAnnouncementPriority::Medium);
+                    if let Some(cb) = on_complete.borrow_mut().take() {
+                        cb();
+                    }
                 }
                 Err(e) => {
                     parent_window.announce(
-                        &format!("Failed: {}", e),
+                        &format!("Failed: {e}"),
                         AccessibleAnnouncementPriority::High,
                     );
+                    if let Some(cb) = on_complete.borrow_mut().take() {
+                        cb();
+                    }
                 }
             }
         }
@@ -424,7 +717,7 @@ fn format_size(bytes: u64) -> String {
     } else if bytes >= KB {
         format!("{:.1} KB", bytes as f64 / KB as f64)
     } else {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     }
 }
 
@@ -437,20 +730,20 @@ fn format_time_remaining(seconds: f64) -> String {
         if secs <= 1 {
             "less than 1 second".to_string()
         } else {
-            format!("about {} seconds", secs)
+            format!("about {secs} seconds")
         }
     } else if secs < 3600 {
         let mins = secs / 60;
         let remaining_secs = secs % 60;
         if remaining_secs == 0 {
-            format!("about {} minute(s)", mins)
+            format!("about {mins} minute(s)")
         } else {
-            format!("about {} minute(s) {} seconds", mins, remaining_secs)
+            format!("about {mins} minute(s) {remaining_secs} seconds")
         }
     } else {
         let hrs = secs / 3600;
         let mins = (secs % 3600) / 60;
-        format!("about {} hour(s) {} minute(s)", hrs, mins)
+        format!("about {hrs} hour(s) {mins} minute(s)")
     }
 }
 
@@ -460,8 +753,12 @@ fn get_unique_dest(dest: &gio::File) -> gio::File {
         return dest.clone();
     }
 
-    let Some(parent) = dest.parent() else { return dest.clone(); };
-    let Some(basename) = dest.basename() else { return dest.clone(); };
+    let Some(parent) = dest.parent() else {
+        return dest.clone();
+    };
+    let Some(basename) = dest.basename() else {
+        return dest.clone();
+    };
     let name = basename.to_string_lossy();
 
     let (stem, ext) = if let Some(dot_pos) = name.rfind('.') {
@@ -472,8 +769,8 @@ fn get_unique_dest(dest: &gio::File) -> gio::File {
 
     for i in 2..100 {
         let new_name = match ext {
-            Some(ext) => format!("{} ({}){}", stem, i, ext),
-            None => format!("{} ({})", stem, i),
+            Some(ext) => format!("{stem} ({i}){ext}"),
+            None => format!("{stem} ({i})"),
         };
         let candidate = parent.child(&new_name);
         if !candidate.query_exists(gio::Cancellable::NONE) {

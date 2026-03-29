@@ -7,17 +7,113 @@ glib::wrapper! {
     pub struct FileObject(ObjectSubclass<imp::FileObject>);
 }
 
+/// Plain data extracted from a gio::FileInfo, usable across threads.
+pub struct FileInfoData {
+    pub name: String,
+    pub is_directory: bool,
+    pub size: u64,
+    pub modified: i64,
+    pub modified_display: String,
+    pub content_type: String,
+}
+
+impl FileInfoData {
+    pub fn from_file_info(info: &gio::FileInfo) -> Self {
+        let name = info.name().to_string_lossy().to_string();
+        let file_type = info.file_type();
+        let is_directory = file_type == gio::FileType::Directory;
+        let size = if is_directory { 0 } else { info.size() as u64 };
+
+        let modified = info
+            .modification_date_time()
+            .map(|dt| dt.to_unix())
+            .unwrap_or(0);
+        let modified_display = info
+            .modification_date_time()
+            .map(|dt| {
+                dt.format("%Y-%m-%d %H:%M")
+                    .unwrap_or_else(|_| glib::GString::from(""))
+                    .to_string()
+            })
+            .unwrap_or_default();
+
+        let content_type = info
+            .content_type()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+
+        Self {
+            name,
+            is_directory,
+            size,
+            modified,
+            modified_display,
+            content_type,
+        }
+    }
+}
+
 impl FileObject {
+    /// Build a FileObject from pre-extracted plain data (safe to call on the
+    /// main thread after the data was gathered in a background thread).
+    pub fn from_data(parent_path: &str, data: &FileInfoData) -> Self {
+        let name = &data.name;
+        let path = if parent_path == "/" {
+            format!("/{name}")
+        } else {
+            format!("{parent_path}/{name}")
+        };
+        let hidden = name.starts_with('.');
+        let size_display = if data.is_directory {
+            String::from("\u{2014}")
+        } else {
+            format_size(data.size)
+        };
+        let icon = if data.is_directory {
+            String::from("folder")
+        } else {
+            gio::content_type_get_generic_icon_name(&data.content_type)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| String::from("text-x-generic"))
+        };
+        let file_type_name = if data.is_directory {
+            String::from("Folder")
+        } else if !data.content_type.is_empty() {
+            gio::content_type_get_description(&data.content_type).to_string()
+        } else {
+            String::from("File")
+        };
+        let search_string = name.to_lowercase();
+        let a11y_name = if data.is_directory {
+            format!("{name}, Folder")
+        } else {
+            format!("{name}, {size_display}, {file_type_name}")
+        };
+
+        glib::Object::builder()
+            .property("name", name)
+            .property("path", &path)
+            .property("icon", &icon)
+            .property("size", data.size)
+            .property("size-display", &size_display)
+            .property("modified", data.modified)
+            .property("modified-display", &data.modified_display)
+            .property("mime-type", &data.content_type)
+            .property("file-type-name", &file_type_name)
+            .property("is-directory", data.is_directory)
+            .property("hidden", hidden)
+            .property("search-string", &search_string)
+            .property("a11y-name", &a11y_name)
+            .build()
+    }
+
     pub fn from_file_info(parent_path: &str, info: &gio::FileInfo) -> Self {
-        let name = info
-            .name()
-            .to_string_lossy()
-            .to_string();
+        let name = info.name().to_string_lossy().to_string();
 
         let path = if parent_path == "/" {
-            format!("/{}", name)
+            format!("/{name}")
         } else {
-            format!("{}/{}", parent_path, name)
+            format!("{parent_path}/{name}")
         };
 
         let file_type = info.file_type();
@@ -68,9 +164,9 @@ impl FileObject {
         let search_string = name.to_lowercase();
 
         let a11y_name = if is_directory {
-            format!("{}, Folder", name)
+            format!("{name}, Folder")
         } else {
-            format!("{}, {}, {}", name, size_display, file_type_name)
+            format!("{name}, {size_display}, {file_type_name}")
         };
 
         glib::Object::builder()
@@ -103,6 +199,6 @@ pub fn format_size(bytes: u64) -> String {
     } else if bytes >= KB {
         format!("{:.1} KB", bytes as f64 / KB as f64)
     } else {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     }
 }

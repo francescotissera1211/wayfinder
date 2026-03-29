@@ -16,11 +16,7 @@ impl Default for ListViewInner {
         let column_view = ColumnView::builder()
             .show_column_separators(true)
             .show_row_separators(true)
-            .show_column_separators(true)
             .build();
-
-        // Hide native column headers — we provide our own accessible ones
-        column_view.set_show_column_separators(true);
 
         // Name column with sorter
         let name_factory = SignalListItemFactory::new();
@@ -33,7 +29,7 @@ impl Default for ListViewInner {
                 (false, true) => return gtk::Ordering::Larger,
                 _ => {}
             }
-            let cmp = a.name().to_lowercase().cmp(&b.name().to_lowercase());
+            let cmp = a.search_string().cmp(&b.search_string());
             match cmp {
                 std::cmp::Ordering::Less => gtk::Ordering::Smaller,
                 std::cmp::Ordering::Greater => gtk::Ordering::Larger,
@@ -155,9 +151,7 @@ impl Default for ListViewInner {
         let mut buttons_builder: Vec<(String, gtk::Button)> = Vec::new();
 
         for (i, (label_text, col)) in columns.iter().enumerate() {
-            let btn = gtk::Button::builder()
-                .hexpand(col.expands())
-                .build();
+            let btn = gtk::Button::builder().hexpand(col.expands()).build();
             if !col.expands() {
                 btn.set_width_request(col.fixed_width());
             }
@@ -208,23 +202,23 @@ impl Default for ListViewInner {
                     for (j, (name, button)) in btns.iter().enumerate() {
                         if j == idx.get() {
                             let dir = if asc.get() { "ascending" } else { "descending" };
-                            button.set_label(&format!("{}, {}", name, dir));
-                            button.update_property(&[gtk::accessible::Property::Label(
-                                &format!("{}, sorted {}", name, dir),
-                            )]);
+                            button.set_label(&format!("{name}, {dir}"));
+                            button.update_property(&[gtk::accessible::Property::Label(&format!(
+                                "{name}, sorted {dir}"
+                            ))]);
                             sorted_name = name.clone();
                         } else {
                             button.set_label(name);
-                            button.update_property(&[gtk::accessible::Property::Label(
-                                &format!("Sort by {}", name),
-                            )]);
+                            button.update_property(&[gtk::accessible::Property::Label(&format!(
+                                "Sort by {name}"
+                            ))]);
                         }
                     }
 
                     // Announce sort change for screen readers
                     let direction = if asc.get() { "ascending" } else { "descending" };
                     cv.announce(
-                        &format!("Sorted by {}, {}", sorted_name, direction),
+                        &format!("Sorted by {sorted_name}, {direction}"),
                         gtk::AccessibleAnnouncementPriority::Medium,
                     );
                 });
@@ -237,15 +231,15 @@ impl Default for ListViewInner {
         for (i, (name, btn)) in all_buttons.iter().enumerate() {
             if i == saved_col as usize {
                 let dir = if saved_asc { "ascending" } else { "descending" };
-                btn.set_label(&format!("{}, {}", name, dir));
-                btn.update_property(&[gtk::accessible::Property::Label(
-                    &format!("{}, sorted {}", name, dir),
-                )]);
+                btn.set_label(&format!("{name}, {dir}"));
+                btn.update_property(&[gtk::accessible::Property::Label(&format!(
+                    "{name}, sorted {dir}"
+                ))]);
             } else {
                 btn.set_label(name);
-                btn.update_property(&[gtk::accessible::Property::Label(
-                    &format!("Sort by {}", name),
-                )]);
+                btn.update_property(&[gtk::accessible::Property::Label(&format!(
+                    "Sort by {name}"
+                ))]);
             }
         }
 
@@ -314,18 +308,12 @@ fn setup_name_factory(factory: &SignalListItemFactory) {
         let entry_expr =
             gtk::PropertyExpression::new(gtk::ListItem::static_type(), Some(&item_expr), "item");
 
-        let icon_expr = gtk::PropertyExpression::new(
-            FileObject::static_type(),
-            Some(&entry_expr),
-            "icon",
-        );
+        let icon_expr =
+            gtk::PropertyExpression::new(FileObject::static_type(), Some(&entry_expr), "icon");
         icon_expr.bind(&icon, "icon-name", gtk::Widget::NONE);
 
-        let name_expr = gtk::PropertyExpression::new(
-            FileObject::static_type(),
-            Some(&entry_expr),
-            "name",
-        );
+        let name_expr =
+            gtk::PropertyExpression::new(FileObject::static_type(), Some(&entry_expr), "name");
         name_expr.bind(&label, "label", gtk::Widget::NONE);
 
         // Accessible label binding — Nautilus pattern
@@ -405,11 +393,8 @@ fn setup_label_factory(factory: &SignalListItemFactory, property: &'static str) 
         let entry_expr =
             gtk::PropertyExpression::new(gtk::ListItem::static_type(), Some(&item_expr), "item");
 
-        let prop_expr = gtk::PropertyExpression::new(
-            FileObject::static_type(),
-            Some(&entry_expr),
-            property,
-        );
+        let prop_expr =
+            gtk::PropertyExpression::new(FileObject::static_type(), Some(&entry_expr), property);
         prop_expr.bind(&label, "label", gtk::Widget::NONE);
 
         item.set_child(Some(&label));

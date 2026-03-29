@@ -16,10 +16,7 @@ impl Default for GridViewInner {
         let factory = SignalListItemFactory::new();
         setup_factory(&factory);
 
-        let grid_view = GridView::builder()
-            .min_columns(3)
-            .max_columns(12)
-            .build();
+        let grid_view = GridView::builder().min_columns(3).max_columns(12).build();
         grid_view.set_factory(Some(&factory));
         grid_view.update_property(&[gtk::accessible::Property::Label("Files")]);
 
@@ -113,18 +110,12 @@ fn setup_factory(factory: &SignalListItemFactory) {
         let entry_expr =
             gtk::PropertyExpression::new(gtk::ListItem::static_type(), Some(&item_expr), "item");
 
-        let icon_expr = gtk::PropertyExpression::new(
-            FileObject::static_type(),
-            Some(&entry_expr),
-            "icon",
-        );
+        let icon_expr =
+            gtk::PropertyExpression::new(FileObject::static_type(), Some(&entry_expr), "icon");
         icon_expr.bind(&icon, "icon-name", gtk::Widget::NONE);
 
-        let name_expr = gtk::PropertyExpression::new(
-            FileObject::static_type(),
-            Some(&entry_expr),
-            "name",
-        );
+        let name_expr =
+            gtk::PropertyExpression::new(FileObject::static_type(), Some(&entry_expr), "name");
         name_expr.bind(&label, "label", gtk::Widget::NONE);
 
         item.set_child(Some(&vbox));
