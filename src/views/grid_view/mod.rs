@@ -27,11 +27,9 @@ impl WayfinderGridView {
     }
 
     pub fn grab_focus_at_selected(&self, selected_pos: u32) {
-        self.imp().grid_view.scroll_to(
-            selected_pos,
-            ListScrollFlags::FOCUS,
-            None,
-        );
+        self.imp()
+            .grid_view
+            .scroll_to(selected_pos, ListScrollFlags::FOCUS, None);
     }
 
     pub fn grab_focus(&self) {

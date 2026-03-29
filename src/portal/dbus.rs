@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 
-use zbus::zvariant::OwnedValue;
 use zbus::interface;
-
+use zbus::zvariant::OwnedValue;
 
 pub struct FileChooserBackend {
     pub gtk_tx: std::sync::mpsc::Sender<ChooserRequest>,

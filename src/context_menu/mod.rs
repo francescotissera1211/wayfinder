@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
-use gtk::gio;
 use gtk::gdk;
+use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
@@ -166,9 +166,7 @@ pub fn show_context_menu(window: &WayfinderWindow, x: f64, y: f64) {
                 .accessible_role(AccessibleRole::MenuItem)
                 .css_classes(["flat"])
                 .build();
-            submenu_btn.update_property(&[
-                gtk::accessible::Property::Label("Open With, submenu"),
-            ]);
+            submenu_btn.update_property(&[gtk::accessible::Property::Label("Open With, submenu")]);
             let btn_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
             let label = gtk::Label::new(Some("Open With"));
             label.set_hexpand(true);
@@ -203,7 +201,7 @@ pub fn show_context_menu(window: &WayfinderWindow, x: f64, y: f64) {
                 let clipboard = display.clipboard();
                 clipboard.set_text(&path);
                 w.announce(
-                    &format!("Copied path: {}", path),
+                    &format!("Copied path: {path}"),
                     gtk::AccessibleAnnouncementPriority::Medium,
                 );
             }
@@ -217,7 +215,7 @@ pub fn show_context_menu(window: &WayfinderWindow, x: f64, y: f64) {
                 let clipboard = display.clipboard();
                 clipboard.set_text(&name);
                 w.announce(
-                    &format!("Copied name: {}", name),
+                    &format!("Copied name: {name}"),
                     gtk::AccessibleAnnouncementPriority::Medium,
                 );
             }
@@ -270,21 +268,23 @@ pub fn show_context_menu(window: &WayfinderWindow, x: f64, y: f64) {
                 if wayfinder::actions::is_compress_dialog(&action) {
                     add_menu_item(&main_box, &action_name, &popover, {
                         let w = window.clone();
-                        let f = file.clone();
                         move || {
+                            let files = w.get_selected_files();
+                            let paths: Vec<String> = files.iter().map(|f| f.path()).collect();
                             let parent: gtk::Window = w.clone().upcast();
-                            wayfinder::actions::show_compress_dialog(&[f.path()], &parent);
+                            wayfinder::actions::show_compress_dialog(&paths, &parent);
                         }
                     });
                 } else {
                     add_menu_item(&main_box, &action_name, &popover, {
                         let w = window.clone();
-                        let f = file.clone();
                         let a = action.clone();
                         move || {
-                            let file_path = f.path();
+                            let files = w.get_selected_files();
+                            let paths: Vec<String> = files.iter().map(|f| f.path()).collect();
                             let current_dir = w.imp().model.current_path();
-                            wayfinder::actions::execute_action(&a, &[file_path], &current_dir);
+                            let parent: gtk::Window = w.clone().upcast();
+                            wayfinder::actions::execute_action(&a, &paths, &current_dir, &parent);
                         }
                     });
                 }

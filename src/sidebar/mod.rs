@@ -54,16 +54,16 @@ fn save_bookmarks(bookmarks: &[(String, String)]) {
     }
     let contents: String = bookmarks
         .iter()
-        .map(|(uri, name)| format!("{} {}", uri, name))
+        .map(|(uri, name)| format!("{uri} {name}"))
         .collect::<Vec<_>>()
         .join("\n");
     if let Err(e) = std::fs::write(&file, contents) {
-        log::warn!("Failed to save bookmarks: {}", e);
+        log::warn!("Failed to save bookmarks: {e}");
     }
 }
 
 pub fn add_bookmark(path: &str) -> bool {
-    let uri = format!("file://{}", path);
+    let uri = format!("file://{path}");
     let mut bookmarks = load_bookmarks();
     if bookmarks.iter().any(|(u, _)| *u == uri) {
         return false; // already exists
@@ -90,13 +90,41 @@ struct PlaceEntry {
 }
 
 const PLACES: &[PlaceEntry] = &[
-    PlaceEntry { name: "Home", icon: "user-home-symbolic", dir_fn: dirs::home_dir },
-    PlaceEntry { name: "Desktop", icon: "user-desktop-symbolic", dir_fn: dirs::desktop_dir },
-    PlaceEntry { name: "Documents", icon: "folder-documents-symbolic", dir_fn: dirs::document_dir },
-    PlaceEntry { name: "Downloads", icon: "folder-download-symbolic", dir_fn: dirs::download_dir },
-    PlaceEntry { name: "Music", icon: "folder-music-symbolic", dir_fn: dirs::audio_dir },
-    PlaceEntry { name: "Pictures", icon: "folder-pictures-symbolic", dir_fn: dirs::picture_dir },
-    PlaceEntry { name: "Videos", icon: "folder-videos-symbolic", dir_fn: dirs::video_dir },
+    PlaceEntry {
+        name: "Home",
+        icon: "user-home-symbolic",
+        dir_fn: dirs::home_dir,
+    },
+    PlaceEntry {
+        name: "Desktop",
+        icon: "user-desktop-symbolic",
+        dir_fn: dirs::desktop_dir,
+    },
+    PlaceEntry {
+        name: "Documents",
+        icon: "folder-documents-symbolic",
+        dir_fn: dirs::document_dir,
+    },
+    PlaceEntry {
+        name: "Downloads",
+        icon: "folder-download-symbolic",
+        dir_fn: dirs::download_dir,
+    },
+    PlaceEntry {
+        name: "Music",
+        icon: "folder-music-symbolic",
+        dir_fn: dirs::audio_dir,
+    },
+    PlaceEntry {
+        name: "Pictures",
+        icon: "folder-pictures-symbolic",
+        dir_fn: dirs::picture_dir,
+    },
+    PlaceEntry {
+        name: "Videos",
+        icon: "folder-videos-symbolic",
+        dir_fn: dirs::video_dir,
+    },
 ];
 
 impl WayfinderSidebar {
@@ -112,34 +140,52 @@ impl WayfinderSidebar {
         &self.imp().container
     }
 
+    /// Focus the places list (for Tab navigation from file list).
+    pub fn focus_list(&self) {
+        let list = &self.imp().places_list;
+        if list.selected_row().is_none() {
+            if let Some(row) = list.row_at_index(0) {
+                list.select_row(Some(&row));
+            }
+        }
+        list.grab_focus();
+    }
+
     pub fn connect_place_activated<F: Fn(String) + 'static>(&self, callback: F) {
-        self.imp().places_list.connect_row_activated(move |_list, row| {
-            let name = row.widget_name();
-            if let Some(path) = name.strip_prefix("place:") {
-                callback(path.to_string());
-            } else if let Some(path) = name.strip_prefix("bookmark:") {
-                callback(path.to_string());
-            } else if let Some(path) = name.strip_prefix("volume:") {
-                callback(path.to_string());
-            } else if name.starts_with("volume-unmounted:") {
-                // Unmounted volume — try to mount it
-                if let Some(uuid) = name.strip_prefix("volume-unmounted:") {
-                    let vm = gio::VolumeMonitor::get();
-                    for vol in vm.volumes() {
-                        let vol_id = vol.uuid().map(|u| u.to_string()).unwrap_or_default();
-                        if vol_id == uuid {
-                            let mount_op = gio::MountOperation::new();
-                            vol.mount(gio::MountMountFlags::NONE, Some(&mount_op), gio::Cancellable::NONE, |result| {
-                                if let Err(e) = result {
-                                    log::error!("Failed to mount volume: {}", e);
-                                }
-                            });
-                            break;
+        self.imp()
+            .places_list
+            .connect_row_activated(move |_list, row| {
+                let name = row.widget_name();
+                if let Some(path) = name.strip_prefix("place:") {
+                    callback(path.to_string());
+                } else if let Some(path) = name.strip_prefix("bookmark:") {
+                    callback(path.to_string());
+                } else if let Some(path) = name.strip_prefix("volume:") {
+                    callback(path.to_string());
+                } else if name.starts_with("volume-unmounted:") {
+                    // Unmounted volume — try to mount it
+                    if let Some(uuid) = name.strip_prefix("volume-unmounted:") {
+                        let vm = gio::VolumeMonitor::get();
+                        for vol in vm.volumes() {
+                            let vol_id = vol.uuid().map(|u| u.to_string()).unwrap_or_default();
+                            if vol_id == uuid {
+                                let mount_op = gio::MountOperation::new();
+                                vol.mount(
+                                    gio::MountMountFlags::NONE,
+                                    Some(&mount_op),
+                                    gio::Cancellable::NONE,
+                                    |result| {
+                                        if let Err(e) = result {
+                                            log::error!("Failed to mount volume: {e}");
+                                        }
+                                    },
+                                );
+                                break;
+                            }
                         }
                     }
                 }
-            }
-        });
+            });
     }
 
     /// Delete key removes the focused bookmark. Ctrl+Up/Down reorders bookmarks.
@@ -161,7 +207,7 @@ impl WayfinderSidebar {
                 let Some(path) = name.strip_prefix("bookmark:") else {
                     return glib::Propagation::Proceed;
                 };
-                let uri = format!("file://{}", path);
+                let uri = format!("file://{path}");
                 remove_bookmark(&uri);
                 let idx = row.index();
                 list.remove(&row);
@@ -213,7 +259,11 @@ impl WayfinderSidebar {
 
             if target_widget.is_none() {
                 // Announce boundary
-                let msg = if key == gdk::Key::Up { "Already at top" } else { "Already at bottom" };
+                let msg = if key == gdk::Key::Up {
+                    "Already at top"
+                } else {
+                    "Already at bottom"
+                };
                 list.announce(msg, gtk::AccessibleAnnouncementPriority::Medium);
                 return glib::Propagation::Stop;
             }
@@ -222,7 +272,10 @@ impl WayfinderSidebar {
             let mut bookmarks = load_bookmarks();
             let current_uri = format!("file://{}", name.strip_prefix("bookmark:").unwrap_or(""));
             let target_name = target_widget.as_ref().unwrap().widget_name().to_string();
-            let target_uri = format!("file://{}", target_name.strip_prefix("bookmark:").unwrap_or(""));
+            let target_uri = format!(
+                "file://{}",
+                target_name.strip_prefix("bookmark:").unwrap_or("")
+            );
 
             let cur_idx = bookmarks.iter().position(|(u, _)| *u == current_uri);
             let tgt_idx = bookmarks.iter().position(|(u, _)| *u == target_uri);
@@ -231,9 +284,9 @@ impl WayfinderSidebar {
                 // Get the neighbour's display name for announcement
                 let neighbour_display = bookmarks[ti].1.clone();
                 let announcement = if key == gdk::Key::Up {
-                    format!("Moved above {}", neighbour_display)
+                    format!("Moved above {neighbour_display}")
                 } else {
-                    format!("Moved below {}", neighbour_display)
+                    format!("Moved below {neighbour_display}")
                 };
 
                 bookmarks.swap(ci, ti);
@@ -247,9 +300,7 @@ impl WayfinderSidebar {
                 while let Some(widget) = child {
                     if widget.widget_name() == name {
                         if let Some(r) = widget.downcast_ref::<gtk::ListBoxRow>() {
-                            r.update_property(&[
-                                gtk::accessible::Property::Label(&announcement),
-                            ]);
+                            r.update_property(&[gtk::accessible::Property::Label(&announcement)]);
                             list.select_row(Some(r));
                             r.grab_focus();
                             // Restore real label after Orca reads the announcement
@@ -258,11 +309,9 @@ impl WayfinderSidebar {
                             glib::timeout_add_local_once(
                                 std::time::Duration::from_millis(500),
                                 move || {
-                                    row_ref.update_property(&[
-                                        gtk::accessible::Property::Label(
-                                            &format!("Bookmark: {}", current_display),
-                                        ),
-                                    ]);
+                                    row_ref.update_property(&[gtk::accessible::Property::Label(
+                                        &format!("Bookmark: {current_display}"),
+                                    )]);
                                 },
                             );
                         }
@@ -312,13 +361,15 @@ impl WayfinderSidebar {
             child = widget.next_sibling();
         }
 
-        let insert_pos = if fs_pos >= 0 { fs_pos + 1 } else {
+        let insert_pos = if fs_pos >= 0 {
+            fs_pos + 1
+        } else {
             // Count all children and insert before the end
             let mut count: i32 = 0;
             let mut c = list.first_child();
-            while c.is_some() {
+            while let Some(widget) = c {
                 count += 1;
-                c = c.unwrap().next_sibling();
+                c = widget.next_sibling();
             }
             count
         };
@@ -357,10 +408,10 @@ impl WayfinderSidebar {
 
             let row = gtk::ListBoxRow::new();
             row.set_child(Some(&row_box));
-            row.set_widget_name(&format!("bookmark:{}", path));
-            row.update_property(&[
-                gtk::accessible::Property::Label(&format!("Bookmark: {}", display_name)),
-            ]);
+            row.set_widget_name(&format!("bookmark:{path}"));
+            row.update_property(&[gtk::accessible::Property::Label(&format!(
+                "Bookmark: {display_name}"
+            ))]);
 
             // Right-click to remove
             let click = gtk::GestureClick::new();
@@ -388,7 +439,10 @@ impl WayfinderSidebar {
         let mut to_remove = Vec::new();
         while let Some(widget) = child {
             let name = widget.widget_name().to_string();
-            if name.starts_with("volume:") || name.starts_with("volume-unmounted:") || name == "volume-separator" {
+            if name.starts_with("volume:")
+                || name.starts_with("volume-unmounted:")
+                || name == "volume-separator"
+            {
                 to_remove.push(widget.clone());
             }
             child = widget.next_sibling();
@@ -404,17 +458,25 @@ impl WayfinderSidebar {
         for mount in vm.mounts() {
             let name = mount.name().to_string();
             let root = mount.default_location();
-            let path = root.path().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+            let path = root
+                .path()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
 
             // Skip root filesystem and home — already in places
-            if path == "/" || path == dirs::home_dir().map(|h| h.to_string_lossy().to_string()).unwrap_or_default() {
+            if path == "/"
+                || path
+                    == dirs::home_dir()
+                        .map(|h| h.to_string_lossy().to_string())
+                        .unwrap_or_default()
+            {
                 continue;
             }
 
             let icon_name = "drive-removable-media-symbolic".to_string();
 
             let can_eject = mount.can_eject() || mount.can_unmount();
-            volume_rows.push((format!("volume:{}", path), name, icon_name, can_eject));
+            volume_rows.push((format!("volume:{path}"), name, icon_name, can_eject));
         }
 
         // Unmounted volumes (that have no mount)
@@ -429,7 +491,12 @@ impl WayfinderSidebar {
             }
             let icon_name = "drive-removable-media-symbolic".to_string();
 
-            volume_rows.push((format!("volume-unmounted:{}", uuid), format!("{} (unmounted)", name), icon_name, false));
+            volume_rows.push((
+                format!("volume-unmounted:{uuid}"),
+                format!("{name} (unmounted)"),
+                icon_name,
+                false,
+            ));
         }
 
         if volume_rows.is_empty() {
@@ -486,32 +553,48 @@ impl WayfinderSidebar {
             if *can_eject {
                 let eject_btn = gtk::Button::from_icon_name("media-eject-symbolic");
                 eject_btn.add_css_class("flat");
-                eject_btn.set_tooltip_text(Some(&format!("Eject {}", label)));
-                eject_btn.update_property(&[
-                    gtk::accessible::Property::Label(&format!("Eject {}", label)),
-                ]);
+                eject_btn.set_tooltip_text(Some(&format!("Eject {label}")));
+                eject_btn.update_property(&[gtk::accessible::Property::Label(&format!(
+                    "Eject {label}"
+                ))]);
 
                 // Find the mount path to identify which mount to eject
-                let mount_path = widget_name.strip_prefix("volume:").unwrap_or("").to_string();
+                let mount_path = widget_name
+                    .strip_prefix("volume:")
+                    .unwrap_or("")
+                    .to_string();
                 let list_clone = list.clone();
                 eject_btn.connect_clicked(move |_| {
                     let vm = gio::VolumeMonitor::get();
                     for mount in vm.mounts() {
                         let root = mount.default_location();
-                        let p = root.path().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+                        let p = root
+                            .path()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_default();
                         if p == mount_path {
                             if mount.can_eject() {
-                                mount.eject_with_operation(gio::MountUnmountFlags::NONE, gio::MountOperation::NONE, gio::Cancellable::NONE, |result| {
-                                    if let Err(e) = result {
-                                        log::error!("Failed to eject: {}", e);
-                                    }
-                                });
+                                mount.eject_with_operation(
+                                    gio::MountUnmountFlags::NONE,
+                                    gio::MountOperation::NONE,
+                                    gio::Cancellable::NONE,
+                                    |result| {
+                                        if let Err(e) = result {
+                                            log::error!("Failed to eject: {e}");
+                                        }
+                                    },
+                                );
                             } else if mount.can_unmount() {
-                                mount.unmount_with_operation(gio::MountUnmountFlags::NONE, gio::MountOperation::NONE, gio::Cancellable::NONE, |result| {
-                                    if let Err(e) = result {
-                                        log::error!("Failed to unmount: {}", e);
-                                    }
-                                });
+                                mount.unmount_with_operation(
+                                    gio::MountUnmountFlags::NONE,
+                                    gio::MountOperation::NONE,
+                                    gio::Cancellable::NONE,
+                                    |result| {
+                                        if let Err(e) = result {
+                                            log::error!("Failed to unmount: {e}");
+                                        }
+                                    },
+                                );
                             }
                             break;
                         }
@@ -526,9 +609,9 @@ impl WayfinderSidebar {
             let row = gtk::ListBoxRow::new();
             row.set_child(Some(&row_box));
             row.set_widget_name(widget_name);
-            row.update_property(&[
-                gtk::accessible::Property::Label(&format!("Volume: {}", label)),
-            ]);
+            row.update_property(&[gtk::accessible::Property::Label(&format!(
+                "Volume: {label}"
+            ))]);
 
             list.insert(&row, insert_pos + 1 + i as i32);
         }
@@ -686,7 +769,8 @@ impl WayfinderSidebar {
 
             // For all other rows, show "Edit Sidebar"
             let popover = gtk::Popover::new();
-            let anchor = list2.selected_row()
+            let anchor = list2
+                .selected_row()
                 .map(|r| r.upcast::<gtk::Widget>())
                 .unwrap_or_else(|| list2.clone().upcast());
             popover.set_parent(&anchor);
@@ -744,7 +828,9 @@ impl WayfinderSidebar {
         let rows: Vec<EditRow> = if let Some(ref config) = config {
             let mut result: Vec<EditRow> = Vec::new();
             for entry in config {
-                if let Some((_name, icon, _path)) = all_places.iter().find(|(n, _, _)| *n == entry.id) {
+                if let Some((_name, icon, _path)) =
+                    all_places.iter().find(|(n, _, _)| *n == entry.id)
+                {
                     result.push(EditRow {
                         id: entry.id.clone(),
                         icon: icon.to_string(),
@@ -764,11 +850,14 @@ impl WayfinderSidebar {
             }
             result
         } else {
-            all_places.iter().map(|(name, icon, _)| EditRow {
-                id: name.to_string(),
-                icon: icon.to_string(),
-                visible: true,
-            }).collect()
+            all_places
+                .iter()
+                .map(|(name, icon, _)| EditRow {
+                    id: name.to_string(),
+                    icon: icon.to_string(),
+                    visible: true,
+                })
+                .collect()
         };
 
         // Build the dialog UI
@@ -795,10 +884,9 @@ impl WayfinderSidebar {
         edit_list.set_selection_mode(gtk::SelectionMode::Single);
         edit_list.update_property(&[gtk::accessible::Property::Label("Sidebar places")]);
 
-        let row_data: std::rc::Rc<std::cell::RefCell<Vec<(String, bool)>>> =
-            std::rc::Rc::new(std::cell::RefCell::new(
-                rows.iter().map(|r| (r.id.clone(), r.visible)).collect(),
-            ));
+        let row_data: std::rc::Rc<std::cell::RefCell<Vec<(String, bool)>>> = std::rc::Rc::new(
+            std::cell::RefCell::new(rows.iter().map(|r| (r.id.clone(), r.visible)).collect()),
+        );
 
         for row_info in &rows {
             let hbox = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -809,9 +897,10 @@ impl WayfinderSidebar {
 
             let check = gtk::CheckButton::new();
             check.set_active(row_info.visible);
-            check.update_property(&[gtk::accessible::Property::Label(
-                &format!("Show {}", row_info.id),
-            )]);
+            check.update_property(&[gtk::accessible::Property::Label(&format!(
+                "Show {}",
+                row_info.id
+            ))]);
 
             let icon = gtk::Image::from_icon_name(&row_info.icon);
             icon.set_pixel_size(16);
@@ -863,8 +952,7 @@ impl WayfinderSidebar {
 
             let is_move = matches!(
                 (key, shift),
-                (gdk::Key::Up, false) | (gdk::Key::Down, false) |
-                (gdk::Key::Home, true) | (gdk::Key::End, true)
+                (gdk::Key::Up | gdk::Key::Down, false) | (gdk::Key::Home | gdk::Key::End, true)
             );
             if !is_move {
                 return glib::Propagation::Proceed;
@@ -879,19 +967,31 @@ impl WayfinderSidebar {
             // Check boundaries and announce if can't move
             match (key, shift) {
                 (gdk::Key::Up, false) if idx == 0 => {
-                    dlg_for_keys.announce("Already at top", gtk::AccessibleAnnouncementPriority::Medium);
+                    dlg_for_keys.announce(
+                        "Already at top",
+                        gtk::AccessibleAnnouncementPriority::Medium,
+                    );
                     return glib::Propagation::Stop;
                 }
                 (gdk::Key::Down, false) if idx >= n - 1 => {
-                    dlg_for_keys.announce("Already at bottom", gtk::AccessibleAnnouncementPriority::Medium);
+                    dlg_for_keys.announce(
+                        "Already at bottom",
+                        gtk::AccessibleAnnouncementPriority::Medium,
+                    );
                     return glib::Propagation::Stop;
                 }
                 (gdk::Key::Home, true) if idx == 0 => {
-                    dlg_for_keys.announce("Already at top", gtk::AccessibleAnnouncementPriority::Medium);
+                    dlg_for_keys.announce(
+                        "Already at top",
+                        gtk::AccessibleAnnouncementPriority::Medium,
+                    );
                     return glib::Propagation::Stop;
                 }
                 (gdk::Key::End, true) if idx >= n - 1 => {
-                    dlg_for_keys.announce("Already at bottom", gtk::AccessibleAnnouncementPriority::Medium);
+                    dlg_for_keys.announce(
+                        "Already at bottom",
+                        gtk::AccessibleAnnouncementPriority::Medium,
+                    );
                     return glib::Propagation::Stop;
                 }
                 _ => {}
@@ -910,16 +1010,20 @@ impl WayfinderSidebar {
                 let d = data_for_keys.borrow();
                 let neighbour_name = if key == gdk::Key::Up || (key == gdk::Key::Home && shift) {
                     // Will move above — neighbour is the one currently at new_idx
-                    d.get(new_idx as usize).map(|(name, _)| name.clone()).unwrap_or_default()
+                    d.get(new_idx as usize)
+                        .map(|(name, _)| name.clone())
+                        .unwrap_or_default()
                 } else {
                     // Will move below — neighbour is the one currently at new_idx
-                    d.get(new_idx as usize).map(|(name, _)| name.clone()).unwrap_or_default()
+                    d.get(new_idx as usize)
+                        .map(|(name, _)| name.clone())
+                        .unwrap_or_default()
                 };
                 match (key, shift) {
                     (gdk::Key::Home, true) => "Moved to top".to_string(),
                     (gdk::Key::End, true) => "Moved to bottom".to_string(),
-                    (gdk::Key::Up, _) => format!("Moved above {}", neighbour_name),
-                    (gdk::Key::Down, _) => format!("Moved below {}", neighbour_name),
+                    (gdk::Key::Up, _) => format!("Moved above {neighbour_name}"),
+                    (gdk::Key::Down, _) => format!("Moved below {neighbour_name}"),
                     _ => String::new(),
                 }
             };
@@ -945,14 +1049,17 @@ impl WayfinderSidebar {
 
                 let check = gtk::CheckButton::new();
                 check.set_active(*vis);
-                check.update_property(&[gtk::accessible::Property::Label(
-                    &format!("Show {}", id),
-                )]);
+                check.update_property(&[gtk::accessible::Property::Label(&format!("Show {id}"))]);
 
-                let icon_name = PLACES.iter()
+                let icon_name = PLACES
+                    .iter()
                     .find(|p| p.name == id)
                     .map(|p| p.icon)
-                    .unwrap_or(if id == "File System" { "drive-harddisk-symbolic" } else { "folder-symbolic" });
+                    .unwrap_or(if id == "File System" {
+                        "drive-harddisk-symbolic"
+                    } else {
+                        "folder-symbolic"
+                    });
                 let icon = gtk::Image::from_icon_name(icon_name);
                 icon.set_pixel_size(16);
 
@@ -973,9 +1080,7 @@ impl WayfinderSidebar {
                 // For the moved row, set the announcement as the label
                 // so Orca reads it instead of the plain name
                 if i == new_idx as usize {
-                    list_row.update_property(&[gtk::accessible::Property::Label(
-                        &announcement,
-                    )]);
+                    list_row.update_property(&[gtk::accessible::Property::Label(&announcement)]);
                 } else {
                     list_row.update_property(&[gtk::accessible::Property::Label(id.as_str())]);
                 }
@@ -1001,11 +1106,14 @@ impl WayfinderSidebar {
                     glib::idle_add_local_once(move || {
                         row_to_focus.grab_focus();
                     });
-                    glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
-                        row_ref.update_property(&[gtk::accessible::Property::Label(
-                            real_name.as_str(),
-                        )]);
-                    });
+                    glib::timeout_add_local_once(
+                        std::time::Duration::from_millis(500),
+                        move || {
+                            row_ref.update_property(&[gtk::accessible::Property::Label(
+                                real_name.as_str(),
+                            )]);
+                        },
+                    );
                 }
             }
             drop(data);
@@ -1070,7 +1178,8 @@ impl WayfinderSidebar {
             let mut result = Vec::new();
             // Config-ordered entries first
             for entry in config {
-                if let Some((name, icon, path)) = all_places.iter().find(|(n, _, _)| *n == entry.id) {
+                if let Some((name, icon, path)) = all_places.iter().find(|(n, _, _)| *n == entry.id)
+                {
                     result.push((*name, *icon, path.clone(), entry.visible));
                 }
             }
@@ -1082,7 +1191,10 @@ impl WayfinderSidebar {
             }
             result
         } else {
-            all_places.iter().map(|(n, i, p)| (*n, *i, p.clone(), true)).collect()
+            all_places
+                .iter()
+                .map(|(n, i, p)| (*n, *i, p.clone(), true))
+                .collect()
         };
 
         for (name, icon_name, path, visible) in &ordered {
@@ -1112,7 +1224,7 @@ impl WayfinderSidebar {
 
             let row = gtk::ListBoxRow::new();
             row.set_child(Some(&row_box));
-            row.set_widget_name(&format!("place:{}", path));
+            row.set_widget_name(&format!("place:{path}"));
             row.update_property(&[gtk::accessible::Property::Label(name)]);
 
             list.append(&row);
@@ -1124,12 +1236,36 @@ impl WayfinderSidebar {
         // Mounted volumes and drives
         self.refresh_volumes();
 
-        // Separator before Bin
+        // Separator before Recent / Bin
         let separator_row = gtk::ListBoxRow::new();
         separator_row.set_child(Some(&gtk::Separator::new(gtk::Orientation::Horizontal)));
         separator_row.set_selectable(false);
         separator_row.set_activatable(false);
         list.append(&separator_row);
+
+        // Recent Files
+        let icon = gtk::Image::from_icon_name("document-open-recent-symbolic");
+        icon.set_pixel_size(16);
+        let label = gtk::Label::builder()
+            .label("Recent")
+            .xalign(0.0)
+            .hexpand(true)
+            .build();
+        let row_box = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(8)
+            .margin_top(4)
+            .margin_bottom(4)
+            .margin_start(8)
+            .margin_end(8)
+            .build();
+        row_box.append(&icon);
+        row_box.append(&label);
+        let row = gtk::ListBoxRow::new();
+        row.set_child(Some(&row_box));
+        row.set_widget_name("place:recent:///");
+        row.update_property(&[gtk::accessible::Property::Label("Recent files")]);
+        list.append(&row);
 
         // Bin
         let icon = gtk::Image::from_icon_name("user-trash-symbolic");
@@ -1152,9 +1288,7 @@ impl WayfinderSidebar {
         let row = gtk::ListBoxRow::new();
         row.set_child(Some(&row_box));
         row.set_widget_name("place:trash:///");
-        row.update_property(&[
-            gtk::accessible::Property::Label("Bin"),
-        ]);
+        row.update_property(&[gtk::accessible::Property::Label("Bin")]);
         list.append(&row);
     }
 }

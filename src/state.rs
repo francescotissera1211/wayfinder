@@ -34,11 +34,11 @@ fn save_state(map: &HashMap<String, String>) {
     let file = state_file();
     let contents: String = map
         .iter()
-        .map(|(k, v)| format!("{}={}", k, v))
+        .map(|(k, v)| format!("{k}={v}"))
         .collect::<Vec<_>>()
         .join("\n");
     if let Err(e) = fs::write(&file, contents) {
-        log::warn!("Failed to save state: {}", e);
+        log::warn!("Failed to save state: {e}");
     }
 }
 
@@ -118,7 +118,10 @@ pub fn load_window_size() -> (i32, i32) {
 pub fn save_sort_state(column: u32, ascending: bool) {
     let mut map = load_state();
     map.insert("sort_column".to_string(), column.to_string());
-    map.insert("sort_ascending".to_string(), if ascending { "true" } else { "false" }.to_string());
+    map.insert(
+        "sort_ascending".to_string(),
+        if ascending { "true" } else { "false" }.to_string(),
+    );
     save_state(&map);
 }
 
@@ -130,6 +133,73 @@ pub fn load_sort_state() -> (u32, bool) {
         .map(|v| v == "true")
         .unwrap_or(true);
     (col, asc)
+}
+
+pub fn save_zoom_level(level: i32) {
+    set_value("zoom_level", &level.to_string());
+}
+
+pub fn load_zoom_level() -> i32 {
+    get_value("zoom_level")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+}
+
+pub fn save_breadcrumb_visible(visible: bool) {
+    set_value("breadcrumb_visible", if visible { "true" } else { "false" });
+}
+
+pub fn load_breadcrumb_visible() -> bool {
+    get_value("breadcrumb_visible")
+        .map(|v| v == "true")
+        .unwrap_or(true) // default: visible
+}
+
+// -- Window session (multi-window restore) --
+// Stored in ~/.config/wayfinder/windows as one directory path per line.
+
+fn windows_path() -> PathBuf {
+    config_dir().join("windows")
+}
+
+/// Save the list of open window directories for session restore.
+pub fn save_window_session(dirs: &[String]) {
+    let file = windows_path();
+    let contents = dirs.join("\n");
+    if let Err(e) = fs::write(&file, contents) {
+        log::warn!("Failed to save window session: {e}");
+    }
+}
+
+/// Load saved window directories. Returns empty vec if none saved.
+pub fn load_window_session() -> Vec<PathBuf> {
+    let file = windows_path();
+    match fs::read_to_string(&file) {
+        Ok(contents) => contents
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                let mut p = PathBuf::from(l.trim());
+                while !p.is_dir() {
+                    match p.parent() {
+                        Some(parent) => p = parent.to_path_buf(),
+                        None => {
+                            p = PathBuf::from("/");
+                            break;
+                        }
+                    }
+                }
+                p
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Clear the saved window session (e.g. after restoring).
+pub fn clear_window_session() {
+    let file = windows_path();
+    let _ = fs::remove_file(&file);
 }
 
 // -- Per-file app associations --
@@ -159,11 +229,11 @@ fn save_file_apps(map: &HashMap<String, String>) {
     let file = file_apps_path();
     let contents: String = map
         .iter()
-        .map(|(k, v)| format!("{}={}", k, v))
+        .map(|(k, v)| format!("{k}={v}"))
         .collect::<Vec<_>>()
         .join("\n");
     if let Err(e) = fs::write(&file, contents) {
-        log::warn!("Failed to save file app associations: {}", e);
+        log::warn!("Failed to save file app associations: {e}");
     }
 }
 
@@ -208,7 +278,11 @@ pub fn load_sidebar_config() -> Option<Vec<SidebarEntry>> {
             })
         })
         .collect();
-    if entries.is_empty() { None } else { Some(entries) }
+    if entries.is_empty() {
+        None
+    } else {
+        Some(entries)
+    }
 }
 
 pub fn save_sidebar_config(entries: &[SidebarEntry]) {
@@ -219,7 +293,6 @@ pub fn save_sidebar_config(entries: &[SidebarEntry]) {
         .collect::<Vec<_>>()
         .join("\n");
     if let Err(e) = fs::write(&file, contents) {
-        log::warn!("Failed to save sidebar config: {}", e);
+        log::warn!("Failed to save sidebar config: {e}");
     }
 }
-

@@ -18,6 +18,14 @@ Wayfinder puts accessibility first. Every element is navigable with a keyboard, 
 - **Volume management** -- mount, unmount, and eject removable media from the sidebar
 - **D-Bus FileManager1** service so other applications can open folders in Wayfinder
 - **Copy/move with progress** dialog including time estimates and cancellation
+- **Replace/Skip/Rename** conflict dialog when pasting over existing files
+- **FUSE mount support** -- rclone, sshfs, and other FUSE mounts work without freezing. Async file monitoring, trash fallback to permanent delete, cross-device directory move
+- **Session restore** -- all open windows and their directories are remembered on exit and restored on next launch
+- **Font zoom** -- Ctrl+Plus/Minus/0 to zoom in, out, or reset (50%–300%, persisted)
+- **Breadcrumb path bar** -- clickable path segments for quick navigation, F4 or header button to toggle
+- **Recent files** -- sidebar entry showing recently opened files
+- **Batch rename** -- find/replace across multiple selected files with live preview
+- **Permission editor** -- interactive chmod in the Properties dialog with checkboxes and octal entry
 - **List and grid views** switchable with Ctrl+1 / Ctrl+2
 - **Bin integration** -- move to bin, restore, empty, with accessible confirmation dialogs
 
@@ -53,7 +61,7 @@ install -Dm644 data/actions/*.desktop -t /usr/share/wayfinder/actions/
 ## Usage
 
 ```bash
-wayfinder                    # Opens home directory (or last visited)
+wayfinder                    # Restores previous session (or opens home directory)
 wayfinder /path/to/folder    # Opens a specific directory
 ```
 
@@ -72,8 +80,9 @@ wayfinder /path/to/folder    # Opens a specific directory
 | Delete (on bookmark) | Remove bookmark |
 | Ctrl+Up/Down (on bookmark) | Reorder bookmark |
 | Ctrl+H | Toggle hidden files |
-| Ctrl+1 / Ctrl+2 | Switch to list / grid view |
-| Ctrl+Shift+S | Toggle sidebar |
+| Ctrl+1 / Ctrl+2 | Switch to grid / list view |
+| F3 | Toggle sidebar |
+| F4 | Toggle breadcrumb bar |
 | Ctrl+F | Search files |
 | Ctrl+A | Select all |
 | Space | Toggle selection on focused file |
@@ -86,6 +95,7 @@ wayfinder /path/to/folder    # Opens a specific directory
 | Ctrl+Shift+X | Cut (this window only) |
 | Ctrl+Shift+V | Paste (this window only) |
 | F2 | Rename |
+| Ctrl+Shift+F2 | Batch rename (multiple selected files) |
 | Ctrl+Shift+N | New folder |
 | Delete | Move to Bin |
 | Shift+Delete | Delete permanently |
@@ -94,7 +104,11 @@ wayfinder /path/to/folder    # Opens a specific directory
 | Ctrl+` | Open terminal in current directory |
 | Ctrl+I | Properties |
 | Shift+F10 / Menu | Context menu |
+| Ctrl+Plus / Ctrl+= | Zoom in |
+| Ctrl+Minus | Zoom out |
+| Ctrl+0 | Reset zoom |
 | Ctrl+? | Keyboard shortcuts window |
+| Tab | Cycle focus: file list → navigation buttons → location bar |
 | Type any letters | Jump to matching file |
 
 ### Custom actions
@@ -105,7 +119,8 @@ Wayfinder loads context menu actions from `.desktop` files in these directories 
 2. `~/.local/share/file-manager/actions/` -- FMA user actions
 3. `/usr/share/file-manager/actions/` -- FMA system actions (apps install here)
 4. `/usr/share/wayfinder/actions/` -- system Wayfinder actions
-5. `~/.local/share/nautilus/scripts/` -- Nautilus scripts
+5. `/usr/local/share/wayfinder/actions/` -- system Wayfinder actions (alternate prefix)
+6. `~/.local/share/nautilus/scripts/` -- Nautilus scripts
 
 Action file format:
 
@@ -149,15 +164,17 @@ src/
   sidebar/       Places, bookmarks, volumes, edit dialog
   file_model/    Directory loading, sorting, filtering, file monitor
   file_object/   GObject data model for file entries
-  file_ops/      Copy, move, trash, delete with progress dialogs
+  file_ops/      Copy, move, trash, delete with progress and conflict dialogs
   views/         List view (ColumnView) and grid view with drag sources
   actions/       Custom action loading and execution
   dbus/          org.freedesktop.FileManager1 service
   navigation/    Back/forward/up history stack
   search/        File name search/filter
   shortcuts/     Keyboard shortcut registration
-  properties/    File properties dialog
-  state/         Persistent state (window size, sort, sidebar config)
+  properties/    File properties and permission editor
+  clipboard/     Global and window-local clipboard
+  state.rs       Persistent state (window size, sort, zoom, sidebar, session restore)
+  portal/        XDG Desktop Portal file chooser backend (separate binary)
 ```
 
 ## Licence

@@ -27,8 +27,23 @@ impl ApplicationImpl for WayfinderApplicationInner {
 
     fn activate(&self) {
         let app = self.obj();
-        let window = WayfinderWindow::new(app.upcast_ref());
-        window.present();
+
+        // Restore previous session windows
+        let session = wayfinder::state::load_window_session();
+        if session.len() > 1 {
+            wayfinder::state::clear_window_session();
+            for dir in &session {
+                let window = WayfinderWindow::new(app.upcast_ref());
+                window.navigate_to_path(&dir.to_string_lossy());
+                window.present();
+            }
+        } else {
+            // Single window or no session — normal startup
+            // (WayfinderWindow::new already loads last_directory)
+            wayfinder::state::clear_window_session();
+            let window = WayfinderWindow::new(app.upcast_ref());
+            window.present();
+        }
     }
 
     fn open(&self, files: &[gio::File], _hint: &str) {
@@ -59,6 +74,24 @@ impl ApplicationImpl for WayfinderApplicationInner {
 
             window.present();
         }
+    }
+
+    fn shutdown(&self) {
+        // Save all open window directories for session restore
+        let app = self.obj();
+        let mut dirs = Vec::new();
+        for window in app.windows() {
+            if let Ok(wf) = window.downcast::<WayfinderWindow>() {
+                let path = wf.imp().model.current_path();
+                if !path.is_empty() {
+                    dirs.push(path);
+                }
+            }
+        }
+        if !dirs.is_empty() {
+            wayfinder::state::save_window_session(&dirs);
+        }
+        self.parent_shutdown();
     }
 }
 

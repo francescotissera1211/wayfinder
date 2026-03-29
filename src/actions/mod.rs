@@ -29,7 +29,10 @@ pub fn load_actions() -> Vec<CustomAction> {
         Some(PathBuf::from("/usr/share/wayfinder/actions")),
         Some(PathBuf::from("/usr/local/share/wayfinder/actions")),
         // Source tree (for development — cargo run from repo root)
-        Some(PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/data/actions"))),
+        Some(PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/data/actions"
+        ))),
     ];
 
     for dir in dirs_to_scan.into_iter().flatten() {
@@ -62,7 +65,6 @@ fn has_command(cmd: &str) -> bool {
         .map(|s| s.success())
         .unwrap_or(false)
 }
-
 
 /// Parse .desktop-like action files from a directory.
 fn load_desktop_actions(dir: &Path) -> Vec<CustomAction> {
@@ -207,16 +209,100 @@ pub fn is_compress_dialog(action: &CustomAction) -> bool {
 }
 
 /// Execute an action with the given file paths and current directory.
-pub fn execute_action(action: &CustomAction, files: &[String], current_dir: &str) {
+/// Announces completion or failure via screen reader on the parent window.
+pub fn execute_action(
+    action: &CustomAction,
+    files: &[String],
+    current_dir: &str,
+    parent: &gtk::Window,
+) {
+    let action_name = action.name.clone();
+    let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+
     if action.is_nautilus_script {
-        execute_nautilus_script(action, files, current_dir);
+        execute_nautilus_script(action, files, current_dir, tx);
     } else {
-        execute_desktop_action(action, files);
+        execute_desktop_action(action, files, tx);
     }
+
+    show_action_progress(&action_name, parent, rx);
+}
+
+/// Show a progress dialog with a pulsing bar while a background action runs.
+/// Closes automatically on completion and announces the result.
+fn show_action_progress(
+    action_name: &str,
+    parent: &gtk::Window,
+    rx: std::sync::mpsc::Receiver<Result<(), String>>,
+) {
+    let dlg = gtk::Window::builder()
+        .title(format!("{action_name}..."))
+        .modal(true)
+        .transient_for(parent)
+        .default_width(400)
+        .resizable(false)
+        .build();
+    dlg.update_property(&[gtk::accessible::Property::Label(&format!(
+        "{action_name} in progress"
+    ))]);
+
+    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    vbox.set_margin_top(12);
+    vbox.set_margin_bottom(12);
+    vbox.set_margin_start(12);
+    vbox.set_margin_end(12);
+
+    let label = gtk::Label::builder()
+        .label(format!("{action_name}..."))
+        .xalign(0.0)
+        .build();
+
+    let progress_bar = gtk::ProgressBar::new();
+    progress_bar.set_show_text(true);
+    progress_bar.set_text(Some("Working..."));
+    progress_bar.update_property(&[gtk::accessible::Property::Label("Progress")]);
+
+    vbox.append(&label);
+    vbox.append(&progress_bar);
+    dlg.set_child(Some(&vbox));
+    dlg.present();
+
+    let p = parent.clone();
+    let name = action_name.to_string();
+    let pb = progress_bar;
+    glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        pb.pulse();
+        match rx.try_recv() {
+            Ok(Ok(())) => {
+                dlg.close();
+                p.announce(
+                    &format!("{name} complete"),
+                    AccessibleAnnouncementPriority::Medium,
+                );
+                glib::ControlFlow::Break
+            }
+            Ok(Err(e)) => {
+                dlg.close();
+                p.announce(
+                    &format!("{name} failed: {e}"),
+                    AccessibleAnnouncementPriority::High,
+                );
+                glib::ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(_) => {
+                dlg.close();
+                glib::ControlFlow::Break
+            }
+        }
+    });
 }
 
 /// Show a compress dialog letting the user pick the archive format.
 pub fn show_compress_dialog(files: &[String], parent_window: &gtk::Window) {
+    if files.is_empty() {
+        return;
+    }
     let dlg = gtk::Window::builder()
         .title("Compress")
         .modal(true)
@@ -233,9 +319,9 @@ pub fn show_compress_dialog(files: &[String], parent_window: &gtk::Window) {
     vbox.set_margin_end(12);
 
     // Archive name entry
-    let first_file = Path::new(files.first().map(|s| s.as_str()).unwrap_or("archive"));
+    let first_file = Path::new(&files[0]);
     let default_stem = first_file
-        .file_name()
+        .file_stem()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "archive".to_string());
 
@@ -253,10 +339,7 @@ pub fn show_compress_dialog(files: &[String], parent_window: &gtk::Window) {
     vbox.append(&name_entry);
 
     // Format dropdown
-    let format_label = gtk::Label::builder()
-        .label("Format:")
-        .xalign(0.0)
-        .build();
+    let format_label = gtk::Label::builder().label("Format:").xalign(0.0).build();
 
     let mut formats: Vec<(&str, &str)> = Vec::new();
     if has_command("zip") {
@@ -306,14 +389,20 @@ pub fn show_compress_dialog(files: &[String], parent_window: &gtk::Window) {
 
     let d = dlg.clone();
     let files = files.to_vec();
-    let formats_clone = formats.iter().map(|(_, ext)| ext.to_string()).collect::<Vec<_>>();
+    let formats_clone = formats
+        .iter()
+        .map(|(_, ext)| ext.to_string())
+        .collect::<Vec<_>>();
     let parent = parent_window.clone();
     let entry_for_focus = name_entry.clone();
     create_btn.connect_clicked(move |_| {
         let stem = name_entry.text().to_string();
         let idx = dropdown.selected() as usize;
-        let ext = formats_clone.get(idx).cloned().unwrap_or_else(|| "tar.gz".to_string());
-        let archive_name = format!("{}.{}", stem, ext);
+        let ext = formats_clone
+            .get(idx)
+            .cloned()
+            .unwrap_or_else(|| "tar.gz".to_string());
+        let archive_name = format!("{stem}.{ext}");
 
         d.close();
 
@@ -351,28 +440,8 @@ pub fn show_compress_dialog(files: &[String], parent_window: &gtk::Window) {
             let _ = tx.send(msg);
         });
 
-        let p = parent.clone();
-        let archive_name_done = archive_name.clone();
-        glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
-            match rx.try_recv() {
-                Ok(Ok(())) => {
-                    p.announce(
-                        &format!("Created {}", archive_name_done),
-                        AccessibleAnnouncementPriority::Medium,
-                    );
-                    glib::ControlFlow::Break
-                }
-                Ok(Err(e)) => {
-                    p.announce(
-                        &format!("Compression failed: {}", e),
-                        AccessibleAnnouncementPriority::High,
-                    );
-                    glib::ControlFlow::Break
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-                Err(_) => glib::ControlFlow::Break,
-            }
-        });
+        let progress_label = format!("Compressing {archive_name}");
+        show_action_progress(&progress_label, &parent, rx);
     });
 
     dlg.present();
@@ -382,23 +451,31 @@ pub fn show_compress_dialog(files: &[String], parent_window: &gtk::Window) {
 fn build_compress_command(ext: &str, archive_name: &str, basenames: &[String]) -> String {
     let quoted_files: String = basenames
         .iter()
-        .map(|f| format!("'{}'", f.replace('\'', "'\\''")))
+        .map(|f| {
+            let escaped = f.replace('\'', "'\\''");
+            format!("'{escaped}'")
+        })
         .collect::<Vec<_>>()
         .join(" ");
-    let quoted_archive = format!("'{}'", archive_name.replace('\'', "'\\''"));
+    let escaped_archive = archive_name.replace('\'', "'\\''");
+    let quoted_archive = format!("'{escaped_archive}'");
 
     match ext {
-        "zip" => format!("zip -r {} {}", quoted_archive, quoted_files),
-        "tar.gz" => format!("bsdtar czf {} {}", quoted_archive, quoted_files),
-        "tar.xz" => format!("bsdtar cJf {} {}", quoted_archive, quoted_files),
-        "tar.zst" => format!("bsdtar --zstd -cf {} {}", quoted_archive, quoted_files),
-        "tar" => format!("bsdtar cf {} {}", quoted_archive, quoted_files),
-        "7z" => format!("7z a {} {}", quoted_archive, quoted_files),
-        _ => format!("bsdtar czf {} {}", quoted_archive, quoted_files),
+        "zip" => format!("zip -r {quoted_archive} {quoted_files}"),
+        "tar.gz" => format!("bsdtar czf {quoted_archive} {quoted_files}"),
+        "tar.xz" => format!("bsdtar cJf {quoted_archive} {quoted_files}"),
+        "tar.zst" => format!("bsdtar --zstd -cf {quoted_archive} {quoted_files}"),
+        "tar" => format!("bsdtar cf {quoted_archive} {quoted_files}"),
+        "7z" => format!("7z a {quoted_archive} {quoted_files}"),
+        _ => format!("bsdtar czf {quoted_archive} {quoted_files}"),
     }
 }
 
-fn execute_desktop_action(action: &CustomAction, files: &[String]) {
+fn execute_desktop_action(
+    action: &CustomAction,
+    files: &[String],
+    tx: std::sync::mpsc::Sender<Result<(), String>>,
+) {
     let mut cmd_str = action.exec.clone();
 
     // Substitute %F (multiple files) or %f (single file)
@@ -443,30 +520,53 @@ fn execute_desktop_action(action: &CustomAction, files: &[String]) {
         .replace("%k", "");
 
     std::thread::spawn(move || {
-        let _ = std::process::Command::new("sh")
+        let result = std::process::Command::new("sh")
             .arg("-c")
             .arg(&cmd_str)
-            .spawn();
+            .output();
+        let msg = match result {
+            Ok(output) if output.status.success() => Ok(()),
+            Ok(output) => {
+                let err = String::from_utf8_lossy(&output.stderr);
+                Err(err.lines().next().unwrap_or("unknown error").to_string())
+            }
+            Err(e) => Err(e.to_string()),
+        };
+        let _ = tx.send(msg);
     });
 }
 
-fn execute_nautilus_script(action: &CustomAction, files: &[String], current_dir: &str) {
+fn execute_nautilus_script(
+    action: &CustomAction,
+    files: &[String],
+    current_dir: &str,
+    tx: std::sync::mpsc::Sender<Result<(), String>>,
+) {
     let paths = files.join("\n");
     let uris: String = files
         .iter()
-        .map(|f| format!("file://{}", f))
+        .map(|f| format!("file://{f}"))
         .collect::<Vec<_>>()
         .join("\n");
-    let current_uri = format!("file://{}", current_dir);
+    let current_uri = format!("file://{current_dir}");
 
     let exec = action.exec.clone();
     let current_dir = current_dir.to_string();
     std::thread::spawn(move || {
-        let _ = std::process::Command::new(&exec)
+        let result = std::process::Command::new(&exec)
             .env("NAUTILUS_SCRIPT_SELECTED_FILE_PATHS", &paths)
             .env("NAUTILUS_SCRIPT_SELECTED_URIS", &uris)
             .env("NAUTILUS_SCRIPT_CURRENT_URI", &current_uri)
             .current_dir(&current_dir)
-            .spawn();
+            .output();
+        let msg = match result {
+            Ok(output) if output.status.success() => Ok(()),
+            Ok(output) => {
+                let err = String::from_utf8_lossy(&output.stderr);
+                Err(err.lines().next().unwrap_or("unknown error").to_string())
+            }
+            Err(e) => Err(e.to_string()),
+        };
+        let _ = tx.send(msg);
     });
 }

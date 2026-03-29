@@ -22,9 +22,7 @@ glib::wrapper! {
 
 impl WayfinderWindow {
     pub fn new(app: &Application) -> Self {
-        glib::Object::builder()
-            .property("application", app)
-            .build()
+        glib::Object::builder().property("application", app).build()
     }
 
     /// Navigate to a path, updating history. If the path doesn't exist,
@@ -60,6 +58,7 @@ impl WayfinderWindow {
         match imp.model.load_directory(path) {
             Ok(_count) => {
                 imp.location_entry.set_text(path);
+                self.update_breadcrumb(path);
 
                 imp.back_button
                     .set_sensitive(imp.nav.borrow().can_go_back());
@@ -90,7 +89,7 @@ impl WayfinderWindow {
                 // would otherwise override the announcement)
                 if count == 0 {
                     self.announce(
-                        &format!("Opened {}, folder is empty", dir_name),
+                        &format!("Opened {dir_name}, folder is empty"),
                         AccessibleAnnouncementPriority::Medium,
                     );
                 }
@@ -99,15 +98,15 @@ impl WayfinderWindow {
 
                 if count > 0 {
                     self.announce(
-                        &format!("Opened {}, {} items", dir_name, count),
+                        &format!("Opened {dir_name}, {count} items"),
                         AccessibleAnnouncementPriority::Medium,
                     );
                 }
             }
             Err(e) => {
-                log::error!("Failed to load directory {}: {}", path, e);
+                log::error!("Failed to load directory {path}: {e}");
                 self.announce(
-                    &format!("Error: could not open {}", path),
+                    &format!("Error: could not open {path}"),
                     AccessibleAnnouncementPriority::High,
                 );
             }
@@ -123,9 +122,19 @@ impl WayfinderWindow {
             imp.search_bar.set_search_mode(false);
         }
 
-        match imp.model.load_uri(uri) {
+        let is_recent = uri == "recent:///";
+        let label = if is_recent { "Recent Files" } else { "Bin" };
+
+        let result = if is_recent {
+            imp.model.load_recent()
+        } else {
+            imp.model.load_uri(uri)
+        };
+
+        match result {
             Ok(_count) => {
                 imp.location_entry.set_text(uri);
+                self.update_breadcrumb(uri);
                 imp.back_button
                     .set_sensitive(imp.nav.borrow().can_go_back());
                 imp.forward_button
@@ -137,22 +146,30 @@ impl WayfinderWindow {
                 let count = imp.model.item_count();
 
                 imp.current_column.set(0);
+                imp.file_selection.borrow_mut().clear();
+                imp.type_ahead_buffer.borrow_mut().clear();
                 imp.selection.set_selected(0);
 
                 if count == 0 {
-                    self.announce("Opened Bin, Bin is empty", AccessibleAnnouncementPriority::Medium);
+                    self.announce(
+                        &format!("Opened {label}, {label} is empty"),
+                        AccessibleAnnouncementPriority::Medium,
+                    );
                 }
 
                 self.focus_current_view();
 
                 if count > 0 {
-                    self.announce(&format!("Opened Bin, {} items", count), AccessibleAnnouncementPriority::Medium);
+                    self.announce(
+                        &format!("Opened {label}, {count} items"),
+                        AccessibleAnnouncementPriority::Medium,
+                    );
                 }
             }
             Err(e) => {
-                log::error!("Failed to load {}: {}", uri, e);
+                log::error!("Failed to load {uri}: {e}");
                 self.announce(
-                    &format!("Error: could not open Bin: {}", e),
+                    &format!("Error: could not open {label}: {e}"),
                     AccessibleAnnouncementPriority::High,
                 );
             }
@@ -165,7 +182,7 @@ impl WayfinderWindow {
         let sel_count = imp.file_selection.borrow().count();
         let mut parts = vec![format!("{} items", count)];
         if sel_count > 0 {
-            parts.push(format!("{} selected", sel_count));
+            parts.push(format!("{sel_count} selected"));
         }
         if imp.model.showing_hidden() {
             parts.push("showing hidden".to_string());
@@ -210,7 +227,9 @@ impl WayfinderWindow {
         imp.current_view.set(mode);
         match mode {
             ViewMode::Grid => {
-                imp.list_view.column_view().set_model(gtk::SelectionModel::NONE);
+                imp.list_view
+                    .column_view()
+                    .set_model(gtk::SelectionModel::NONE);
                 imp.grid_view.set_model(&imp.selection);
                 imp.view_stack.set_visible_child_name("grid");
                 wayfinder::state::save_view_mode("grid");
@@ -220,7 +239,9 @@ impl WayfinderWindow {
                 );
             }
             ViewMode::List => {
-                imp.grid_view.grid_view().set_model(gtk::SelectionModel::NONE);
+                imp.grid_view
+                    .grid_view()
+                    .set_model(gtk::SelectionModel::NONE);
                 imp.list_view.set_model(&imp.selection);
                 imp.view_stack.set_visible_child_name("list");
                 wayfinder::state::save_view_mode("list");
@@ -280,13 +301,14 @@ impl WayfinderWindow {
         // Check for per-file app association
         if let Some(desktop_id) = wayfinder::state::load_file_app(&path) {
             let all_apps = gio::AppInfo::all();
-            if let Some(app) = all_apps.iter().find(|a| {
-                a.id().map(|id| id.to_string()) == Some(desktop_id.clone())
-            }) {
+            if let Some(app) = all_apps
+                .iter()
+                .find(|a| a.id().map(|id| id.to_string()) == Some(desktop_id.clone()))
+            {
                 let gio_file = gio::File::for_path(&path);
                 let ctx = WidgetExt::display(self).app_launch_context();
                 if let Err(e) = app.launch(&[gio_file], Some(&ctx)) {
-                    log::error!("Failed to open with preferred app: {}", e);
+                    log::error!("Failed to open with preferred app: {e}");
                     // Fall through to default
                 } else {
                     return;
@@ -299,7 +321,7 @@ impl WayfinderWindow {
         let uri = gio_file.uri();
         let ctx = WidgetExt::display(self).app_launch_context();
         if let Err(e) = gio::AppInfo::launch_default_for_uri(&uri, Some(&ctx)) {
-            log::error!("Failed to open {}: {}", path, e);
+            log::error!("Failed to open {path}: {e}");
             self.announce(
                 &format!("Failed to open {}", file.name()),
                 AccessibleAnnouncementPriority::High,
@@ -381,7 +403,7 @@ impl WayfinderWindow {
                         match wayfinder::file_ops::empty_trash() {
                             Ok(count) => {
                                 window.announce(
-                                    &format!("Bin emptied, {} items deleted", count),
+                                    &format!("Bin emptied, {count} items deleted"),
                                     AccessibleAnnouncementPriority::Medium,
                                 );
                                 // Reload if we're viewing trash
@@ -391,7 +413,7 @@ impl WayfinderWindow {
                             }
                             Err(e) => {
                                 window.announce(
-                                    &format!("Failed to empty bin: {}", e),
+                                    &format!("Failed to empty bin: {e}"),
                                     AccessibleAnnouncementPriority::High,
                                 );
                             }
@@ -415,7 +437,10 @@ impl WayfinderWindow {
         if files.is_empty() {
             return;
         }
-        let gio_files: Vec<_> = files.iter().map(|f| gio::File::for_path(f.path())).collect();
+        let gio_files: Vec<_> = files
+            .iter()
+            .map(|f| gio::File::for_path(f.path()))
+            .collect();
         let count = gio_files.len();
         wayfinder::clipboard::global_set(ClipboardState::new(ClipboardOperation::Copy, gio_files));
         if count == 1 {
@@ -425,7 +450,7 @@ impl WayfinderWindow {
             );
         } else {
             self.announce(
-                &format!("Copied {} files", count),
+                &format!("Copied {count} files"),
                 AccessibleAnnouncementPriority::Medium,
             );
         }
@@ -437,7 +462,10 @@ impl WayfinderWindow {
         if files.is_empty() {
             return;
         }
-        let gio_files: Vec<_> = files.iter().map(|f| gio::File::for_path(f.path())).collect();
+        let gio_files: Vec<_> = files
+            .iter()
+            .map(|f| gio::File::for_path(f.path()))
+            .collect();
         let count = gio_files.len();
         wayfinder::clipboard::global_set(ClipboardState::new(ClipboardOperation::Cut, gio_files));
         if count == 1 {
@@ -447,7 +475,7 @@ impl WayfinderWindow {
             );
         } else {
             self.announce(
-                &format!("Cut {} files", count),
+                &format!("Cut {count} files"),
                 AccessibleAnnouncementPriority::Medium,
             );
         }
@@ -464,7 +492,10 @@ impl WayfinderWindow {
         if files.is_empty() {
             return;
         }
-        let gio_files: Vec<_> = files.iter().map(|f| gio::File::for_path(f.path())).collect();
+        let gio_files: Vec<_> = files
+            .iter()
+            .map(|f| gio::File::for_path(f.path()))
+            .collect();
         let count = gio_files.len();
         *self.imp().clipboard.borrow_mut() =
             Some(ClipboardState::new(ClipboardOperation::Copy, gio_files));
@@ -475,7 +506,7 @@ impl WayfinderWindow {
             );
         } else {
             self.announce(
-                &format!("Copied {} files (this window)", count),
+                &format!("Copied {count} files (this window)"),
                 AccessibleAnnouncementPriority::Medium,
             );
         }
@@ -487,7 +518,10 @@ impl WayfinderWindow {
         if files.is_empty() {
             return;
         }
-        let gio_files: Vec<_> = files.iter().map(|f| gio::File::for_path(f.path())).collect();
+        let gio_files: Vec<_> = files
+            .iter()
+            .map(|f| gio::File::for_path(f.path()))
+            .collect();
         let count = gio_files.len();
         *self.imp().clipboard.borrow_mut() =
             Some(ClipboardState::new(ClipboardOperation::Cut, gio_files));
@@ -498,7 +532,7 @@ impl WayfinderWindow {
             );
         } else {
             self.announce(
-                &format!("Cut {} files (this window)", count),
+                &format!("Cut {count} files (this window)"),
                 AccessibleAnnouncementPriority::Medium,
             );
         }
@@ -511,23 +545,53 @@ impl WayfinderWindow {
 
     fn paste_from(&self, clipboard: Option<ClipboardState>, is_global: bool) {
         let imp = self.imp();
+
+        // Guard against concurrent paste operations
+        if imp.pasting.get() {
+            self.announce(
+                "Paste already in progress",
+                AccessibleAnnouncementPriority::Medium,
+            );
+            return;
+        }
+
         if let Some(state) = clipboard {
             let dest_dir = gio::File::for_path(imp.model.current_path());
             let parent_window: gtk::Window = self.clone().upcast();
 
+            imp.pasting.set(true);
+            let remaining = std::rc::Rc::new(std::cell::Cell::new(state.files.len()));
+
             for source in &state.files {
                 let w = self.clone();
+                let rem = remaining.clone();
                 let reload: Option<Box<dyn FnOnce() + 'static>> = Some(Box::new(move || {
+                    // Always clear the paste guard when the last file finishes
+                    rem.set(rem.get() - 1);
+                    if rem.get() == 0 {
+                        w.imp().pasting.set(false);
+                    }
+                    // Reload directory to reflect changes
                     let path = w.imp().model.current_path();
                     let _ = w.imp().model.load_directory(&path);
                     w.update_status();
                 }));
                 match state.operation {
                     ClipboardOperation::Copy => {
-                        wayfinder::file_ops::copy_with_progress(source, &dest_dir, &parent_window, reload);
+                        wayfinder::file_ops::copy_with_progress(
+                            source,
+                            &dest_dir,
+                            &parent_window,
+                            reload,
+                        );
                     }
                     ClipboardOperation::Cut => {
-                        wayfinder::file_ops::move_with_progress(source, &dest_dir, &parent_window, reload);
+                        wayfinder::file_ops::move_with_progress(
+                            source,
+                            &dest_dir,
+                            &parent_window,
+                            reload,
+                        );
                     }
                 }
             }
@@ -554,16 +618,22 @@ impl WayfinderWindow {
         let imp = self.imp();
         let old_pos = imp.selection.selected();
 
-        // Save paths for undo
-        let paths: Vec<String> = files.iter().map(|f| f.path()).collect();
-
         let mut success = 0;
         let mut failed = 0;
         let mut last_error = String::new();
+        let mut needs_perm_delete: Vec<FileObject> = Vec::new();
+        let mut trashed_paths: Vec<String> = Vec::new();
+
         for file in &files {
             let gio_file = gio::File::for_path(file.path());
-            match wayfinder::file_ops::trash_file(&gio_file) {
-                Ok(()) => success += 1,
+            match wayfinder::file_ops::trash_or_delete(&gio_file) {
+                Ok(wayfinder::file_ops::TrashResult::Trashed) => {
+                    success += 1;
+                    trashed_paths.push(file.path());
+                }
+                Ok(wayfinder::file_ops::TrashResult::NeedsPermanentDelete) => {
+                    needs_perm_delete.push(file.clone());
+                }
                 Err(e) => {
                     failed += 1;
                     last_error = format!("{}: {}", file.name(), e);
@@ -571,25 +641,86 @@ impl WayfinderWindow {
             }
         }
 
+        // If some files can't be trashed (e.g. FUSE mount), offer permanent deletion
+        if !needs_perm_delete.is_empty() {
+            let window = self.clone();
+            let count = needs_perm_delete.len();
+            let message = if count == 1 {
+                format!(
+                    "{} is on a remote mount and cannot be moved to Bin. Delete permanently?",
+                    needs_perm_delete[0].name()
+                )
+            } else {
+                format!(
+                    "{count} files are on a remote mount and cannot be moved to Bin. Delete permanently?"
+                )
+            };
+
+            let dialog = gtk::AlertDialog::builder()
+                .message(message)
+                .detail("This cannot be undone.")
+                .buttons(["Cancel", "Delete permanently"])
+                .cancel_button(0)
+                .default_button(0)
+                .build();
+
+            let file_paths: Vec<(String, String)> = needs_perm_delete
+                .iter()
+                .map(|f| (f.name(), f.path()))
+                .collect();
+
+            dialog.choose(
+                Some(&window.clone()),
+                gio::Cancellable::NONE,
+                move |result| {
+                    if let Ok(choice) = result {
+                        if choice == 1 {
+                            let mut del_success = 0;
+                            for (_name, path) in &file_paths {
+                                let gio_file = gio::File::for_path(path);
+                                if wayfinder::file_ops::delete_file_recursive(&gio_file).is_ok() {
+                                    del_success += 1;
+                                }
+                            }
+                            if del_success > 0 {
+                                let msg = if del_success == 1 {
+                                    format!("Deleted {}", file_paths[0].0)
+                                } else {
+                                    format!("Deleted {del_success} files")
+                                };
+                                // Reload directory to reflect deletions
+                                let current = window.imp().model.current_path();
+                                let _ = window.imp().model.load_directory(&current);
+                                window.announce(&msg, AccessibleAnnouncementPriority::Medium);
+                                window.imp().file_selection.borrow_mut().clear();
+                                window.update_status();
+                                window.restore_focus_to_selected();
+                            }
+                        }
+                    }
+                },
+            );
+        }
+
         // Store trashed paths for undo (only successfully trashed ones)
-        if success > 0 {
-            *imp.last_trashed.borrow_mut() = paths;
+        if !trashed_paths.is_empty() {
+            *imp.last_trashed.borrow_mut() = trashed_paths;
         }
 
         // Announce failures FIRST (before focus changes trigger Orca)
         if failed > 0 {
             if failed == 1 {
                 self.announce(
-                    &format!("Could not move to Bin: {}", last_error),
+                    &format!("Could not move to Bin: {last_error}"),
                     AccessibleAnnouncementPriority::High,
                 );
             } else {
                 self.announce(
-                    &format!("{} files could not be moved to Bin", failed),
+                    &format!("{failed} files could not be moved to Bin"),
                     AccessibleAnnouncementPriority::High,
                 );
             }
-            if success == 0 {
+            if success == 0 && needs_perm_delete.is_empty() {
                 return;
             }
         }
@@ -620,9 +751,9 @@ impl WayfinderWindow {
                     format!("Moved {} to Bin", files[0].name())
                 }
             } else if now_empty {
-                format!("Moved {} files to Bin, folder is now empty", success)
+                format!("Moved {success} files to Bin, folder is now empty")
             } else {
-                format!("Moved {} files to Bin", success)
+                format!("Moved {success} files to Bin")
             };
 
             self.announce(&msg, AccessibleAnnouncementPriority::Medium);
@@ -642,7 +773,7 @@ impl WayfinderWindow {
         let message = if count == 1 {
             format!("Permanently delete {}?", files[0].name())
         } else {
-            format!("Permanently delete {} items?", count)
+            format!("Permanently delete {count} items?")
         };
 
         let dialog = gtk::AlertDialog::builder()
@@ -654,10 +785,8 @@ impl WayfinderWindow {
             .build();
 
         // Capture paths as strings before the async callback
-        let file_paths: Vec<(String, String)> = files
-            .iter()
-            .map(|f| (f.name(), f.path()))
-            .collect();
+        let file_paths: Vec<(String, String)> =
+            files.iter().map(|f| (f.name(), f.path())).collect();
 
         dialog.choose(
             Some(&window.clone()),
@@ -675,7 +804,7 @@ impl WayfinderWindow {
                                 Ok(()) => success += 1,
                                 Err(e) => {
                                     failed += 1;
-                                    last_error = format!("{}: {}", name, e);
+                                    last_error = format!("{name}: {e}");
                                 }
                             }
                         }
@@ -684,12 +813,12 @@ impl WayfinderWindow {
                         if failed > 0 {
                             if failed == 1 {
                                 window.announce(
-                                    &format!("Could not delete: {}", last_error),
+                                    &format!("Could not delete: {last_error}"),
                                     AccessibleAnnouncementPriority::High,
                                 );
                             } else {
                                 window.announce(
-                                    &format!("{} files could not be deleted", failed),
+                                    &format!("{failed} files could not be deleted"),
                                     AccessibleAnnouncementPriority::High,
                                 );
                             }
@@ -721,9 +850,9 @@ impl WayfinderWindow {
                                         format!("Deleted {}", file_paths[0].0)
                                     }
                                 } else if now_empty {
-                                    format!("Deleted {} files, folder is now empty", success)
+                                    format!("Deleted {success} files, folder is now empty")
                                 } else {
-                                    format!("Deleted {} files", success)
+                                    format!("Deleted {success} files")
                                 };
 
                                 window.announce(&msg, AccessibleAnnouncementPriority::Medium);
@@ -805,7 +934,7 @@ impl WayfinderWindow {
             match wayfinder::file_ops::rename_file(&gio_file, &new_name) {
                 Ok(_) => {
                     w.announce(
-                        &format!("Renamed to {}", new_name),
+                        &format!("Renamed to {new_name}"),
                         AccessibleAnnouncementPriority::Medium,
                     );
                     // Reload directory as fallback in case file monitor doesn't catch the rename
@@ -815,7 +944,7 @@ impl WayfinderWindow {
                 }
                 Err(e) => {
                     w.announce(
-                        &format!("Rename failed: {}", e),
+                        &format!("Rename failed: {e}"),
                         AccessibleAnnouncementPriority::High,
                     );
                 }
@@ -852,6 +981,218 @@ impl WayfinderWindow {
 
         dlg.present();
         entry.grab_focus();
+    }
+
+    pub fn batch_rename(&self) {
+        let files = self.get_selected_files();
+        if files.len() < 2 {
+            self.announce(
+                "Select multiple files to batch rename",
+                AccessibleAnnouncementPriority::Medium,
+            );
+            return;
+        }
+
+        let window = self.clone();
+
+        let dlg = gtk::Window::builder()
+            .title("Batch Rename")
+            .modal(true)
+            .transient_for(&window)
+            .default_width(500)
+            .default_height(400)
+            .build();
+        dlg.update_property(&[gtk::accessible::Property::Label("Batch rename files")]);
+
+        let vbox = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        vbox.set_margin_top(12);
+        vbox.set_margin_bottom(12);
+        vbox.set_margin_start(12);
+        vbox.set_margin_end(12);
+
+        // Find/Replace entries
+        let find_entry = gtk::Entry::builder()
+            .placeholder_text("Find text...")
+            .hexpand(true)
+            .build();
+        find_entry.update_property(&[gtk::accessible::Property::Label("Find text in filenames")]);
+
+        let replace_entry = gtk::Entry::builder()
+            .placeholder_text("Replace with...")
+            .hexpand(true)
+            .build();
+        replace_entry.update_property(&[gtk::accessible::Property::Label("Replace with text")]);
+
+        let grid = gtk::Grid::builder()
+            .row_spacing(6)
+            .column_spacing(8)
+            .build();
+        let find_label = gtk::Label::builder().label("Find:").xalign(1.0).build();
+        let replace_label = gtk::Label::builder().label("Replace:").xalign(1.0).build();
+        grid.attach(&find_label, 0, 0, 1, 1);
+        grid.attach(&find_entry, 1, 0, 1, 1);
+        grid.attach(&replace_label, 0, 1, 1, 1);
+        grid.attach(&replace_entry, 1, 1, 1, 1);
+        vbox.append(&grid);
+
+        // Preview list
+        let preview_label = gtk::Label::builder()
+            .label("Preview:")
+            .xalign(0.0)
+            .margin_top(8)
+            .build();
+        vbox.append(&preview_label);
+
+        let preview_list = gtk::ListBox::new();
+        preview_list.set_selection_mode(gtk::SelectionMode::None);
+        preview_list.update_property(&[gtk::accessible::Property::Label("Rename preview")]);
+
+        let scrolled = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .vexpand(true)
+            .child(&preview_list)
+            .build();
+        vbox.append(&scrolled);
+
+        // Populate initial preview
+        let file_names: Vec<String> = files.iter().map(|f| f.name()).collect();
+        let file_paths: Vec<String> = files.iter().map(|f| f.path()).collect();
+
+        let names_rc = std::rc::Rc::new(file_names);
+        let preview_ref = preview_list.clone();
+
+        let update_preview = {
+            let names = names_rc.clone();
+            let preview = preview_ref.clone();
+            let find = find_entry.clone();
+            let replace = replace_entry.clone();
+            move || {
+                while let Some(child) = preview.first_child() {
+                    preview.remove(&child);
+                }
+                let find_text = find.text().to_string();
+                for name in names.iter() {
+                    let new_name = if find_text.is_empty() {
+                        name.clone()
+                    } else {
+                        name.replace(&find_text, &replace.text())
+                    };
+                    let changed = *name != new_name;
+                    let display = if changed {
+                        format!("{name} → {new_name}")
+                    } else {
+                        name.clone()
+                    };
+                    let label = gtk::Label::builder()
+                        .label(&display)
+                        .xalign(0.0)
+                        .margin_start(8)
+                        .margin_end(8)
+                        .margin_top(2)
+                        .margin_bottom(2)
+                        .build();
+                    if changed {
+                        label.add_css_class("accent");
+                    }
+                    let row = gtk::ListBoxRow::new();
+                    row.set_child(Some(&label));
+                    row.set_selectable(false);
+                    row.update_property(&[gtk::accessible::Property::Label(&display)]);
+                    preview.append(&row);
+                }
+            }
+        };
+
+        // Initial preview
+        update_preview();
+
+        // Update preview on text change
+        let up1 = update_preview.clone();
+        find_entry.connect_changed(move |_| up1());
+        let up2 = update_preview.clone();
+        replace_entry.connect_changed(move |_| up2());
+
+        // Buttons
+        let button_box = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        button_box.set_halign(gtk::Align::End);
+        button_box.set_margin_top(8);
+
+        let cancel_btn = gtk::Button::with_label("Cancel");
+        let rename_btn = gtk::Button::with_label("Rename All");
+        rename_btn.add_css_class("suggested-action");
+        rename_btn.update_property(&[gtk::accessible::Property::Label("Rename all files")]);
+        button_box.append(&cancel_btn);
+        button_box.append(&rename_btn);
+        vbox.append(&button_box);
+
+        dlg.set_child(Some(&vbox));
+
+        let d = dlg.clone();
+        cancel_btn.connect_clicked(move |_| d.close());
+
+        let d = dlg.clone();
+        let w = window.clone();
+        let find_e = find_entry.clone();
+        let replace_e = replace_entry.clone();
+        rename_btn.connect_clicked(move |_| {
+            let find_text = find_e.text().to_string();
+            if find_text.is_empty() {
+                w.announce("Enter text to find", AccessibleAnnouncementPriority::Medium);
+                return;
+            }
+            let replace_text = replace_e.text().to_string();
+            let mut renamed = 0u32;
+            let mut errors = 0u32;
+            for (i, name) in names_rc.iter().enumerate() {
+                let new_name = name.replace(&find_text, &replace_text);
+                if new_name == *name {
+                    continue;
+                }
+                let gio_file = gio::File::for_path(&file_paths[i]);
+                match wayfinder::file_ops::rename_file(&gio_file, &new_name) {
+                    Ok(_) => renamed += 1,
+                    Err(e) => {
+                        log::error!("Batch rename error: {e}");
+                        errors += 1;
+                    }
+                }
+            }
+            let msg = if errors > 0 {
+                format!("Renamed {renamed} files, {errors} errors")
+            } else {
+                format!("Renamed {renamed} files")
+            };
+            w.announce(&msg, AccessibleAnnouncementPriority::Medium);
+
+            // Reload directory
+            let path = w.imp().model.current_path();
+            let _ = w.imp().model.load_directory(&path);
+            w.update_status();
+
+            d.close();
+        });
+
+        let key_ctrl = gtk::EventControllerKey::new();
+        let d = dlg.clone();
+        key_ctrl.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape {
+                d.close();
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        });
+        dlg.add_controller(key_ctrl);
+
+        let w = window.clone();
+        dlg.connect_close_request(move |_| {
+            w.restore_focus_to_selected();
+            glib::Propagation::Proceed
+        });
+
+        dlg.present();
+        find_entry.grab_focus();
     }
 
     pub fn handle_drop(&self, uri_str: &str) {
@@ -930,7 +1271,7 @@ impl WayfinderWindow {
             match wayfinder::file_ops::create_folder(&parent, &name) {
                 Ok(_) => {
                     w.announce(
-                        &format!("Created folder {}", name),
+                        &format!("Created folder {name}"),
                         AccessibleAnnouncementPriority::Medium,
                     );
                     // Reload directory as fallback in case file monitor doesn't catch the new folder
@@ -940,7 +1281,7 @@ impl WayfinderWindow {
                 }
                 Err(e) => {
                     w.announce(
-                        &format!("Failed to create folder: {}", e),
+                        &format!("Failed to create folder: {e}"),
                         AccessibleAnnouncementPriority::High,
                     );
                 }
@@ -1009,7 +1350,7 @@ impl WayfinderWindow {
                         match wayfinder::file_ops::restore_from_trash(&trash_file) {
                             Ok(_) => restored += 1,
                             Err(e) => {
-                                log::error!("Failed to restore {}: {}", name, e);
+                                log::error!("Failed to restore {name}: {e}");
                             }
                         }
                         break;
@@ -1039,7 +1380,7 @@ impl WayfinderWindow {
                 );
             } else {
                 self.announce(
-                    &format!("Restored {} files", restored),
+                    &format!("Restored {restored} files"),
                     AccessibleAnnouncementPriority::Medium,
                 );
             }
@@ -1074,7 +1415,7 @@ impl WayfinderWindow {
                 full_args.push(&path);
                 let _ = std::process::Command::new(cmd).args(&full_args).spawn();
                 self.announce(
-                    &format!("Opened terminal in {}", path),
+                    &format!("Opened terminal in {path}"),
                     AccessibleAnnouncementPriority::Medium,
                 );
                 return;
@@ -1114,53 +1455,70 @@ impl WayfinderWindow {
         list.update_property(&[gtk::accessible::Property::Label("Shortcuts list")]);
 
         let sections: &[(&str, &[(&str, &str)])] = &[
-            ("Navigation", &[
-                ("Alt+Left", "Go back"),
-                ("Alt+Right", "Go forward"),
-                ("Alt+Up", "Go to parent folder"),
-                ("Ctrl+L", "Go to location"),
-                ("Ctrl+Shift+H", "Home"),
-                ("Ctrl+Shift+O", "Documents"),
-                ("Ctrl+Shift+K", "Desktop"),
-                ("Ctrl+Shift+L", "Downloads"),
-                ("Ctrl+Shift+R", "File System"),
-                ("Enter", "Open file or folder"),
-                ("Backspace", "Go back"),
-            ]),
-            ("File Operations", &[
-                ("Ctrl+C", "Copy"),
-                ("Ctrl+X", "Cut"),
-                ("Ctrl+V", "Paste"),
-                ("Ctrl+Shift+C", "Copy (this window only)"),
-                ("Ctrl+Shift+X", "Cut (this window only)"),
-                ("Ctrl+Shift+V", "Paste (this window only)"),
-                ("Ctrl+A", "Select all"),
-                ("Space", "Toggle selection"),
-                ("Shift+Space", "Range selection"),
-                ("Escape", "Clear selection"),
-                ("F2", "Rename"),
-                ("Delete", "Move to Bin"),
-                ("Shift+Delete", "Delete permanently"),
-                ("Ctrl+Shift+N", "New folder"),
-                ("Ctrl+D", "Bookmark current folder"),
-                ("Ctrl+Z", "Undo trash"),
-            ]),
-            ("View", &[
-                ("Ctrl+1", "Grid view"),
-                ("Ctrl+2", "List view"),
-                ("Ctrl+H", "Toggle hidden files"),
-                ("Ctrl+Shift+S", "Toggle sidebar"),
-                ("Ctrl+F", "Search files"),
-                ("Ctrl+I", "Properties"),
-            ]),
-            ("General", &[
-                ("Ctrl+N", "New window"),
-                ("Ctrl+`", "Open terminal here"),
-                ("Menu or Shift+F10", "Context menu"),
-                ("Tab", "Path completion (in location bar)"),
-                ("Type letters", "Jump to matching file"),
-                ("Ctrl+?", "This shortcuts window"),
-            ]),
+            (
+                "Navigation",
+                &[
+                    ("Alt+Left", "Go back"),
+                    ("Alt+Right", "Go forward"),
+                    ("Alt+Up", "Go to parent folder"),
+                    ("Ctrl+L", "Go to location"),
+                    ("Ctrl+Shift+H", "Home"),
+                    ("Ctrl+Shift+O", "Documents"),
+                    ("Ctrl+Shift+K", "Desktop"),
+                    ("Ctrl+Shift+L", "Downloads"),
+                    ("Ctrl+Shift+R", "File System"),
+                    ("Enter", "Open file or folder"),
+                    ("Backspace", "Go back"),
+                ],
+            ),
+            (
+                "File Operations",
+                &[
+                    ("Ctrl+C", "Copy"),
+                    ("Ctrl+X", "Cut"),
+                    ("Ctrl+V", "Paste"),
+                    ("Ctrl+Shift+C", "Copy (this window only)"),
+                    ("Ctrl+Shift+X", "Cut (this window only)"),
+                    ("Ctrl+Shift+V", "Paste (this window only)"),
+                    ("Ctrl+A", "Select all"),
+                    ("Space", "Toggle selection"),
+                    ("Shift+Space", "Range selection"),
+                    ("Escape", "Clear selection"),
+                    ("F2", "Rename"),
+                    ("Ctrl+Shift+F2", "Batch rename"),
+                    ("Delete", "Move to Bin"),
+                    ("Shift+Delete", "Delete permanently"),
+                    ("Ctrl+Shift+N", "New folder"),
+                    ("Ctrl+D", "Bookmark current folder"),
+                    ("Ctrl+Z", "Undo trash"),
+                ],
+            ),
+            (
+                "View",
+                &[
+                    ("Ctrl+1", "Grid view"),
+                    ("Ctrl+2", "List view"),
+                    ("Ctrl+H", "Toggle hidden files"),
+                    ("F3", "Toggle sidebar"),
+                    ("F4", "Toggle breadcrumb bar"),
+                    ("Ctrl+F", "Search files"),
+                    ("Ctrl+I", "Properties"),
+                    ("Ctrl++", "Zoom in"),
+                    ("Ctrl+-", "Zoom out"),
+                    ("Ctrl+0", "Reset zoom"),
+                ],
+            ),
+            (
+                "General",
+                &[
+                    ("Ctrl+N", "New window"),
+                    ("Ctrl+`", "Open terminal here"),
+                    ("Menu or Shift+F10", "Context menu"),
+                    ("Tab", "Path completion (in location bar)"),
+                    ("Type letters", "Jump to matching file"),
+                    ("Ctrl+?", "This shortcuts window"),
+                ],
+            ),
         ];
 
         for (section_name, shortcuts) in sections {
@@ -1205,9 +1563,9 @@ impl WayfinderWindow {
                 row.set_child(Some(&hbox));
                 row.set_selectable(false);
                 row.set_activatable(false);
-                row.update_property(&[gtk::accessible::Property::Label(
-                    &format!("{}: {}", description, key),
-                )]);
+                row.update_property(&[gtk::accessible::Property::Label(&format!(
+                    "{description}: {key}"
+                ))]);
 
                 list.append(&row);
             }
@@ -1244,5 +1602,109 @@ impl WayfinderWindow {
         });
 
         dlg.present();
+    }
+
+    /// Update the breadcrumb path bar with clickable segments.
+    fn update_breadcrumb(&self, path: &str) {
+        let imp = self.imp();
+        let breadcrumb = &imp.breadcrumb_box;
+
+        // Remove existing buttons
+        while let Some(child) = breadcrumb.first_child() {
+            breadcrumb.remove(&child);
+        }
+
+        // Special URIs
+        if path.starts_with("trash:") || path.starts_with("recent:") {
+            let label = if path.starts_with("recent:") {
+                "Recent Files"
+            } else {
+                "Bin"
+            };
+            let btn = gtk::Button::with_label(label);
+            btn.add_css_class("flat");
+            btn.set_sensitive(false);
+            btn.update_property(&[gtk::accessible::Property::Label(label)]);
+            breadcrumb.append(&btn);
+            return;
+        }
+
+        // Build path segments
+        let components: Vec<&str> = path.split('/').collect();
+        let mut accumulated = String::new();
+
+        for (i, component) in components.iter().enumerate() {
+            if i == 0 {
+                // Root "/"
+                accumulated.push('/');
+                let btn = gtk::Button::with_label("/");
+                btn.add_css_class("flat");
+                btn.update_property(&[gtk::accessible::Property::Label("Root directory")]);
+                let w = self.clone();
+                btn.connect_clicked(move |_| {
+                    w.navigate_to_path("/");
+                });
+                breadcrumb.append(&btn);
+                continue;
+            }
+
+            if component.is_empty() {
+                continue;
+            }
+
+            accumulated.push_str(component);
+
+            // Separator
+            let sep = gtk::Label::new(Some("/"));
+            sep.add_css_class("dim-label");
+            breadcrumb.append(&sep);
+
+            let btn = gtk::Button::with_label(component);
+            btn.add_css_class("flat");
+            let target = accumulated.clone();
+            let display = *component;
+            btn.update_property(&[gtk::accessible::Property::Label(&format!(
+                "Go to {display}"
+            ))]);
+
+            // Last segment is not clickable (current directory)
+            if i == components.len() - 1 {
+                btn.set_sensitive(false);
+            } else {
+                let w = self.clone();
+                btn.connect_clicked(move |_| {
+                    w.navigate_to_path(&target);
+                });
+            }
+
+            breadcrumb.append(&btn);
+            accumulated.push('/');
+        }
+
+        // Scroll to the end to show the current directory
+        let scroll = imp.breadcrumb_scroll.clone();
+        glib::idle_add_local_once(move || {
+            let adj = scroll.hadjustment();
+            adj.set_value(adj.upper());
+        });
+    }
+
+    /// Adjust zoom level by `delta` percent (e.g. +10 or -10).
+    /// Passing 0 just re-applies the current level (used by reset).
+    pub fn apply_zoom(&self, delta: i32) {
+        let imp = self.imp();
+        let new_level = (imp.zoom_level.get() + delta).clamp(50, 300);
+        imp.zoom_level.set(new_level);
+
+        let pt = new_level as f64 / 100.0 * 10.0;
+        imp.zoom_css
+            .load_from_string(&format!("* {{ font-size: {pt}pt; }}"));
+
+        wayfinder::state::save_zoom_level(new_level);
+
+        self.announce(
+            &format!("Zoom {new_level}%"),
+            AccessibleAnnouncementPriority::Medium,
+        );
     }
 }
