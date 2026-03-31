@@ -82,7 +82,6 @@ pub struct WayfinderWindowInner {
     pub breadcrumb_box: gtk::Box,
     pub breadcrumb_scroll: gtk::ScrolledWindow,
     pub breadcrumb_toggle: gtk::ToggleButton,
-    pub pasting: Cell<bool>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -217,7 +216,6 @@ impl Default for WayfinderWindowInner {
                 .icon_name("view-wrapped-symbolic")
                 .tooltip_text("Toggle breadcrumb bar (F4)")
                 .build(),
-            pasting: Cell::new(false),
         }
     }
 }

@@ -546,31 +546,13 @@ impl WayfinderWindow {
     fn paste_from(&self, clipboard: Option<ClipboardState>, is_global: bool) {
         let imp = self.imp();
 
-        // Guard against concurrent paste operations
-        if imp.pasting.get() {
-            self.announce(
-                "Paste already in progress",
-                AccessibleAnnouncementPriority::Medium,
-            );
-            return;
-        }
-
         if let Some(state) = clipboard {
             let dest_dir = gio::File::for_path(imp.model.current_path());
             let parent_window: gtk::Window = self.clone().upcast();
 
-            imp.pasting.set(true);
-            let remaining = std::rc::Rc::new(std::cell::Cell::new(state.files.len()));
-
             for source in &state.files {
                 let w = self.clone();
-                let rem = remaining.clone();
                 let reload: Option<Box<dyn FnOnce() + 'static>> = Some(Box::new(move || {
-                    // Always clear the paste guard when the last file finishes
-                    rem.set(rem.get() - 1);
-                    if rem.get() == 0 {
-                        w.imp().pasting.set(false);
-                    }
                     // Reload directory to reflect changes
                     let path = w.imp().model.current_path();
                     let _ = w.imp().model.load_directory(&path);

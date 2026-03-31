@@ -453,10 +453,10 @@ fn run_with_progress(
     } = op;
     let op_name = if is_move { "Moving" } else { "Copying" };
 
-    // Build progress dialog
+    // Build progress dialog (non-modal so the user can continue working)
     let dlg = gtk::Window::builder()
         .title(format!("{op_name} {display_name}"))
-        .modal(true)
+        .modal(false)
         .transient_for(parent_window)
         .default_width(450)
         .resizable(false)
